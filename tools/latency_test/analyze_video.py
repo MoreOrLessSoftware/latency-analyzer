@@ -8,7 +8,8 @@ trigger square in the stream once the host's answer arrives; this script finds b
 the time between them.
 
 How it works:
- - The four corner bullseyes are found in every frame, so the camera may be handheld. They give a perspective
+ - The four corner bullseyes are found in every frame, so the camera may be handheld. When one is hidden (Moonlight's
+   stats overlay covers the top left one), it is estimated from the other three. They give a perspective
    transform from the stream's pixel grid to the camera image, and each frame is resampled onto that grid.
  - The trigger square's position comes from the same layout code as the app (pattern.h). The marker is placed by
    the client and depends on the client display, so it is found instead: the large square outside the pattern whose
@@ -20,7 +21,9 @@ How it works:
 Requires numpy and opencv-python (or opencv-python-headless).
 
 Usage:
-  python analyze_video.py VIDEO --stream 2560x1440 [--fps 240]
+  python analyze_video.py VIDEO --stream 2560x1440 [--stream-fps 120] [--fps 240] [--report]
+
+See README.md next to this script for the whole procedure.
 """
 import argparse
 import csv
@@ -32,6 +35,8 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+
+from report import write_report
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -158,31 +163,42 @@ class Canvas:
         return slice(max(v0, 0), max(v1, 1)), slice(max(u0, 0), max(u1, 1))
 
 
-def find_fiducials(gray):
+def largest_child(contours, hierarchy, index):
     """
-    Find the four corner bullseyes: a white square holding a black ring holding a white center, which shows up as a
-    contour with a child and a grandchild. Returns their centers as top left, top right, bottom left, bottom right.
+    The largest contour directly inside contour index, or -1. Specks of noise can come first in the hierarchy, so all
+    of them are compared.
     """
-    background = float(np.median(gray))
-    bright = float(np.percentile(gray, 99.8))
-    if bright - background < 20:
-        return None
-    _, binary = cv2.threshold(gray, (background + bright) / 2, 255, cv2.THRESH_BINARY)
+    best, best_area = -1, 0.0
+    child = hierarchy[index][2]
+    while child >= 0:
+        area = cv2.contourArea(contours[child])
+        if area > best_area:
+            best, best_area = child, area
+        child = hierarchy[child][0]
+    return best
+
+
+def bullseye_centers(gray, threshold):
+    """
+    Centers of the bullseyes in a frame thresholded at the given level: a white square holding a black ring holding a
+    white center, which shows up as a contour with a child and a grandchild of the right sizes.
+    """
+    _, binary = cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY)
     contours, hierarchy = cv2.findContours(binary, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
     if hierarchy is None:
-        return None
+        return []
     hierarchy = hierarchy[0]
 
-    candidates = []
+    centers = []
     for i, contour in enumerate(contours):
-        child = hierarchy[i][2]
-        if child < 0:
-            continue
-        grandchild = hierarchy[child][2]
-        if grandchild < 0:
-            continue
         area = cv2.contourArea(contour)
         if area < 40:
+            continue
+        child = largest_child(contours, hierarchy, i)
+        if child < 0:
+            continue
+        grandchild = largest_child(contours, hierarchy, child)
+        if grandchild < 0:
             continue
         x, y, w, h = cv2.boundingRect(contour)
         if not 0.5 < w / h < 2:
@@ -192,24 +208,74 @@ def find_fiducials(gray):
         if not (0.25 < child_ratio < 0.9 and 0.005 < grandchild_ratio < 0.25):
             continue
         m = cv2.moments(contour)
-        candidates.append((m["m10"] / m["m00"], m["m01"] / m["m00"]))
+        centers.append((m["m10"] / m["m00"], m["m01"] / m["m00"]))
+    return centers
 
-    if len(candidates) < 4:
+
+def find_fiducials(gray):
+    """
+    Find the four corner bullseyes. Returns their centers as top left, top right, bottom left, bottom right, and the
+    index of a corner that was hidden and estimated from the other three (or None), or None when too few are found.
+    """
+    background = float(np.median(gray))
+    bright = float(np.percentile(gray, 99.8))
+    if bright - background < 20:
+        return None
+
+    # Halfway between the background and white usually works. With a short exposure or a dim corner of the display the
+    # white squares can fall below it, so a lower level is tried before settling for three.
+    candidates = []
+    for level in (0.5, 0.3):
+        found = bullseye_centers(gray, background + (bright - background) * level)
+        if len(found) > len(candidates):
+            candidates = found
+        if len(candidates) >= 4:
+            break
+
+    if len(candidates) < 3:
         return None
     points = np.array(candidates)
+    if len(points) == 3:
+        # One bullseye is hidden, often under Moonlight's stats overlay. The two farthest apart are a diagonal, so
+        # the hidden corner completes the parallelogram with the third. complete_corners() corrects it for perspective.
+        pairs = [(0, 1, 2), (0, 2, 1), (1, 2, 0)]
+        a, b, c = max(pairs, key=lambda p: np.linalg.norm(points[p[0]] - points[p[1]]))
+        points = np.vstack([points, points[a] + points[b] - points[c]])
     sums = points[:, 0] + points[:, 1]
     diffs = points[:, 0] - points[:, 1]
-    corners = [points[np.argmin(sums)], points[np.argmax(diffs)], points[np.argmin(diffs)], points[np.argmax(sums)]]
-    if len({(round(p[0]), round(p[1])) for p in corners}) < 4:
+    roles = [np.argmin(sums), np.argmax(diffs), np.argmin(diffs), np.argmax(sums)]
+    if len(set(roles)) < 4:
         return None
-    return np.array(corners, dtype=np.float32)
+    corners = np.array([points[i] for i in roles], dtype=np.float32)
+    estimated = None
+    if len(candidates) == 3:
+        if 3 not in roles:
+            return None
+        estimated = roles.index(3)
+    return corners, estimated
+
+
+def complete_corners(corners, estimated, last_full):
+    """
+    Correct a corner estimated by parallelogram completion with the last frame where all four were seen: there the
+    true corner and its parallelogram estimate differ by the perspective of the view, which changes slowly.
+    """
+    if estimated is None or last_full is None:
+        return corners
+    others = [i for i in range(4) if i != estimated]
+    opposite = 3 - estimated  # TL<->BR and TR<->BL
+    neighbours = [i for i in others if i != opposite]
+    guess = last_full[neighbours[0]] + last_full[neighbours[1]] - last_full[opposite]
+    corners = corners.copy()
+    corners[estimated] += last_full[estimated] - guess
+    return corners
 
 
 def read_video(path, canvas, layout, max_frames=None):
     """
     Resample every frame onto the canvas. Returns the stack of canvas frames, which frames are valid (false before the
-    fiducials were first found), the number of frames where the fiducials were found, and a reference frame with its
-    transform for drawing.
+    fiducials were first found), the number of frames where the fiducials were found, how many of those had only three
+    of them in view, and a reference frame with its transform for drawing.
     """
     capture = cv2.VideoCapture(str(path))
     if not capture.isOpened():
@@ -219,6 +285,8 @@ def read_video(path, canvas, layout, max_frames=None):
     frames = []
     valid = []
     found = 0
+    three = 0
+    last_full = None
     transform = None
     reference = None
     total = int(capture.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
@@ -230,8 +298,15 @@ def read_video(path, canvas, layout, max_frames=None):
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         small = cv2.resize(gray, (gray.shape[1] // 2, gray.shape[0] // 2), interpolation=cv2.INTER_AREA)
 
-        corners = find_fiducials(small)
-        if corners is not None:
+        detection = find_fiducials(small)
+        corners = None
+        if detection is not None:
+            corners, estimated = detection
+            if estimated is None:
+                last_full = corners
+            else:
+                three += 1
+                corners = complete_corners(corners, estimated, last_full)
             found += 1
             # Canvas pixel -> half resolution camera pixel. A held transform covers frames where detection fails.
             transform = cv2.getPerspectiveTransform(canvas_fiducials, corners)
@@ -262,7 +337,7 @@ def read_video(path, canvas, layout, max_frames=None):
     capture.release()
     if not frames:
         sys.exit("The video has no frames")
-    return np.stack(frames), np.array(valid), found, reference
+    return np.stack(frames), np.array(valid), found, three, reference
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -479,7 +554,11 @@ def main():
     parser.add_argument("--fps", type=float, help="camera capture rate (default: read from the file)")
     parser.add_argument("--max-frames", type=int, help="only analyse the first N frames")
     parser.add_argument("--out", type=Path, help="directory for the CSV and debug images (default: next to the video)")
+    parser.add_argument("--stream-fps", type=float, help="stream frame rate, to express latencies in stream frames")
+    parser.add_argument("--report", action="store_true", help="also write an HTML report, VIDEO.report.html")
     args = parser.parse_args()
+    if not args.video.is_file():
+        sys.exit(f"No such file: {args.video}")
 
     fps, fps_source = (args.fps, "--fps") if args.fps else probe_capture_fps(args.video)
     if not fps:
@@ -495,7 +574,7 @@ def main():
     stem = out_dir / args.video.stem
 
     print(f"Reading {args.video.name} at {fps:g} fps ({fps_source})", file=sys.stderr)
-    stack, valid, found, reference = read_video(args.video, canvas, layout, args.max_frames)
+    stack, valid, found, three, reference = read_video(args.video, canvas, layout, args.max_frames)
     frames = stack.shape[0]
     if found == 0:
         sys.exit("The corner bullseyes were not found in any frame. Is the whole pattern in shot?")
@@ -586,7 +665,7 @@ def main():
     # Report
     print()
     print(f"Video:       {frames} frames at {fps:g} fps = {frames / fps:.2f} s; stream {width}x{height}")
-    print(f"Bullseyes:   found in {found}/{frames} frames")
+    print(f"Bullseyes:   found in {found}/{frames} frames" + (f", {three} of them with one hidden and estimated" if three else ""))
     print(f"Marker:      x {marker.x:.0f} y {marker.y:.0f} size {marker.w:.0f}x{marker.h:.0f} in stream pixels "
           f"(trigger is at y {layout['trigger'].y} size {layout['trigger'].w}); "
           f"{'sampled on the same rows as the trigger' if same_rows else 'NOT on the trigger rows, so scanout timing differs'}")
@@ -617,26 +696,56 @@ def main():
     print(f"Edge length, 10-90 %: marker rise {ramp(local_flips, True)} fall {ramp(local_flips, False)}; "
           f"trigger rise {ramp(host_flips, True)} fall {ramp(host_flips, False)}")
 
+    notes = []
     if opposite_direction:
-        print()
-        print(f"Note: in {len(opposite_direction)} of {len(pairs)} pairs the squares flipped in opposite directions "
-              "(one went black to white while the other went white to black), so the display's rise and fall times "
-              "differ between them. To line them up, quit the test app with Esc and relaunch it, then toggle the "
-              "marker off and on before pressing keys.")
+        notes.append(f"In {len(opposite_direction)} of {len(pairs)} pairs the squares flipped in opposite directions "
+                     "(one went black to white while the other went white to black), so the display's rise and fall times "
+                     "differ between them. To line them up, quit the test app with Esc and relaunch it, then toggle the "
+                     "marker off and on before pressing keys.")
     if skipped_seq:
-        print(f"Note: the host's input number jumped at {len(skipped_seq)} pair(s) "
-              f"(e.g. input {skipped_seq[0] + 1}): an input was dropped or two arrived in one frame.")
+        notes.append(f"The host's input number jumped at {len(skipped_seq)} pair(s) "
+                     f"(e.g. input {skipped_seq[0] + 1}): an input was dropped or two arrived in one frame.")
     if outliers:
         listed = ", ".join(f"input {i + 1} ({v:.2f} ms vs {m:.2f})" for i, v, m in sorted(outliers))
-        print(f"Note: {len(outliers)} outlier(s): {listed}. A short one usually means the marker was drawn late, "
-              "because the client had no new frame to draw it on; a long one, a slow frame somewhere on the path.")
+        notes.append(f"{len(outliers)} outlier(s): {listed}. A short one usually means the marker was drawn late, "
+                     "because the client had no new frame to draw it on; a long one, a slow frame somewhere on the path.")
     if missed:
-        print(f"Note: {len(missed)} marker flips had no trigger flip before the next marker flip, first at "
-              f"{missed[0].time:.3f} s.")
+        notes.append(f"{len(missed)} marker flips had no trigger flip before the next marker flip, first at "
+                     f"{missed[0].time:.3f} s.")
+    if notes:
+        print()
+    for note in notes:
+        print(f"Note: {note}")
 
     print()
     print(f"Wrote {csv_path.name}, {regions_path.name} (check the boxes sit on the squares) and {trace_path.name} "
           f"in {out_dir}")
+
+    if args.report:
+        report_path = stem.with_name(stem.name + ".report.html")
+        info = {
+            "video": args.video,
+            "frames": frames,
+            "fps": fps,
+            "fps_source": fps_source,
+            "stream": (width, height),
+            "stream_fps": args.stream_fps,
+            "found": found,
+            "estimated": three,
+            "marker": marker,
+            "same_rows": same_rows,
+            "marker_flips": len(local_flips),
+            "trigger_flips": len(host_flips),
+            "missed": len(missed),
+            "extra": len(extra_hosts),
+            "ramps": (ramp(local_flips, True), ramp(local_flips, False), ramp(host_flips, True), ramp(host_flips, False)),
+        }
+        presses = [
+            {"input": i + 1, "latency": (h.time - l.time) * 1000, "rising": l.rising, "host_rising": h.rising, "seq": seq}
+            for i, (l, h, seq) in enumerate(pairs)
+        ]
+        write_report(report_path, info, presses, notes, {"csv": csv_path, "regions": regions_path, "trace": trace_path})
+        print(f"Wrote {report_path}")
 
 
 if __name__ == "__main__":

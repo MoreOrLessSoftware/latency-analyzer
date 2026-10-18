@@ -224,6 +224,8 @@ namespace latency_test {
     "  --windowed       Run in a 1280x720 window instead of borderless fullscreen.\n"
     "  --vsync          Wait for vertical blank instead of presenting immediately with tearing.\n"
     "  --noise <0..1>   Background noise amplitude (default 0.5, 0 disables the noise).\n"
+    "  --no-noise       Flat gray background instead of noise, so the encoder is not pushed\n"
+    "                   to its bitrate (same as --noise 0).\n"
     "  --fps <n>        Background update rate (default: display refresh rate).\n"
     "  --log <path>     CSV log of inputs and the frames that answered them\n"
     "                   (default: %TEMP%\\sunshine_latency_test.csv).\n"
@@ -274,6 +276,9 @@ namespace latency_test {
       }
       else if (arg == "--vsync") {
         options.vsync = true;
+      }
+      else if (arg == "--no-noise") {
+        options.noise = 0;
       }
       else if (arg == "--help" || arg == "-h" || arg == "/?") {
         options.help = true;

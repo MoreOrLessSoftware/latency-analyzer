@@ -181,6 +181,8 @@ TEST(LatencyTestPatternTest, ParseOptionsReadsEveryOption) {
   EXPECT_DOUBLE_EQ(options->fps, 120);
   EXPECT_EQ(options->log_path, "C:\\x.csv");
 
+  EXPECT_DOUBLE_EQ(parse({"--no-noise"}, error)->noise, 0);
+  EXPECT_DOUBLE_EQ(parse({"--noise", "0.8", "--no-noise"}, error)->noise, 0);
   EXPECT_TRUE(parse({"-h"}, error)->help);
   EXPECT_TRUE(parse({"/?"}, error)->help);
 }
