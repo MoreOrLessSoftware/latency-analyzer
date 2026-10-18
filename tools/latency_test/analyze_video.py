@@ -223,9 +223,11 @@ def find_fiducials(gray):
         return None
 
     # Halfway between the background and white usually works. With a short exposure or a dim corner of the display the
-    # white squares can fall below it, so a lower level is tried before settling for three.
+    # white squares can fall below it, so a lower level is tried before settling for three. When the display fills
+    # little of the shot, the median is the dark room around it and the display's own gray clears halfway, merging the
+    # white squares into it, so higher levels are tried too.
     candidates = []
-    for level in (0.5, 0.3):
+    for level in (0.5, 0.3, 0.7, 0.85):
         found = bullseye_centers(gray, background + (bright - background) * level)
         if len(found) > len(candidates):
             candidates = found
