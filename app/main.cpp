@@ -1,5 +1,5 @@
 /**
- * @file tools/latency_test/main.cpp
+ * @file app/main.cpp
  * @brief Host side test app for measuring input to photon latency with a camera.
  *
  * Run it as a Sunshine app and stream it to the client under test. It draws the test pattern described in

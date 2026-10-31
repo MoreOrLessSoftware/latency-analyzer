@@ -1,16 +1,16 @@
 /**
- * @file tests/unit/test_latency_test_pattern.cpp
- * @brief Test tools/latency_test/pattern.h.
+ * @file tests/test_pattern.cpp
+ * @brief Test app/pattern.h.
  */
 
 // test includes
-#include "../tests_common.h"
+#include <gtest/gtest.h>
 
 // standard includes
 #include <bit>
 
 // local includes
-#include <tools/latency_test/pattern.h>
+#include <app/pattern.h>
 
 namespace {
   using latency_test::rect_t;

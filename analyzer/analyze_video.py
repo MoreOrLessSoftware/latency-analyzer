@@ -42,7 +42,7 @@ from report import write_report
 
 
 # ---------------------------------------------------------------------------------------------------------------------
-# Test pattern layout, ported from tools/latency_test/pattern.h. Keep the two in sync.
+# Test pattern layout, ported from app/pattern.h. Keep the two in sync.
 
 
 @dataclass

@@ -1,5 +1,5 @@
 /**
- * @file tools/latency_test/pattern.h
+ * @file app/pattern.h
  * @brief Platform independent parts of the latency test app: options, Gray codes and the test pattern layout.
  *
  * The test pattern is built to be read by a camera pointed at the client display:

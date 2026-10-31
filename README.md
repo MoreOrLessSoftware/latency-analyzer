@@ -1,4 +1,4 @@
-# Latency test
+# ml-latency-analyzer
 
 Measures a stream's latency from a key press with a phone camera. The test needs no clock sync and no footage of a
 finger pressing a key, because both events it times appear on the same screen:
@@ -20,15 +20,15 @@ the key press to the trigger being presented.
 
 | File | What it is |
 |---|---|
-| `main.cpp`, `pattern.h` | The host test app, built as `latency-test.exe` |
-| `analyze_video.py` | Finds both flips in the video and reports the latency |
-| `report.py` | The HTML report written by `analyze_video.py --report` |
-| `analyze.bat` | Drag and drop wrapper for Windows |
+| `app/main.cpp`, `app/pattern.h` | The host test app, built as `latency-test.exe` |
+| `analyzer/analyze_video.py` | Finds both flips in the video and reports the latency |
+| `analyzer/report.py` | The HTML report written by `analyze_video.py --report` |
+| `analyzer/analyze.bat` | Drag and drop wrapper for Windows |
+| `tests/test_pattern.cpp` | Unit tests for the test pattern layout and options |
 
 ## What you need
 
-- A Sunshine host with `latency-test.exe`. It is built with Sunshine (`ninja -C cmake-build-release latency-test`)
-  and installed to `tools\`.
+- A Sunshine host with `latency-test.exe` (see [Build](#build)).
 - A Moonlight client with the latency marker: moonlight-qt, branch `latency-marker`. The marker works with the
   D3D11VA, DXVA2, Vulkan (placebo) and SDL renderers. For the time from the key press, the client must also log the
   marker's delay, which only branch `mlsoft-custom2` does so far.
@@ -36,6 +36,19 @@ the key press to the trigger being presented.
   Android does, in the `com.android.capture.fps` tag. When it doesn't, pass `--fps`.
 - Python 3 with `numpy` and `opencv-python-headless` (`python -m pip install numpy opencv-python-headless`).
   You also need `ffprobe` on `PATH` to read the capture rate.
+
+## Build
+
+On Windows, build with MSYS2 UCRT64 (`cmake`, `ninja` and `gcc` from the `mingw-w64-ucrt-x86_64-` packages):
+
+```
+cmake -S . -B cmake-build-release -G Ninja -DCMAKE_BUILD_TYPE=Release
+ninja -C cmake-build-release
+cmake-build-release/test_latency.exe
+```
+
+`latency-test.exe` is linked statically, so it can be copied to the host on its own. The unit tests download
+GoogleTest at configure time; pass `-DBUILD_TESTS=OFF` to skip them.
 
 ## Set up
 
