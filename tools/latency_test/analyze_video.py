@@ -3,9 +3,10 @@
 Measure streaming latency from a slow motion video of the latency-test pattern.
 
 Film the client display while it streams Sunshine's latency-test app with Moonlight's latency marker turned on
-(Ctrl+Alt+Shift+T), pressing keys now and then. Every press flips the marker square on the client right away and the
+(Ctrl+Alt+Shift+T), pressing keys now and then. Every press flips the marker square on the client's next frame and the
 trigger square in the stream once the host's answer arrives; this script finds both flips in every input and reports
-the time between them.
+the time between them. With the marker log Moonlight writes (--marker-log) it adds the marker's own delay, for the
+time from the key press to the trigger being presented.
 
 How it works:
  - The four corner bullseyes are found in every frame, so the camera may be handheld. When one is hidden (Moonlight's
@@ -28,6 +29,7 @@ See README.md next to this script for the whole procedure.
 import argparse
 import csv
 import json
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -497,6 +499,125 @@ def describe(values):
 
 
 # ---------------------------------------------------------------------------------------------------------------------
+# Moonlight's marker log
+#
+# The marker doesn't reach the screen the moment the key is pressed: it is drawn on the client's next frame, which
+# can take a frame interval or more. Moonlight logs how long each flip took to be presented, and adding that to the
+# latency measured here gives the time from the key press to the host's answer being presented. It logs the presses
+# of its automatic latency test (Space), each test to a Moonlight-latency-test-<time>.csv next to its log, and to the
+# log itself.
+
+MOONLIGHT_FLIP = re.compile(
+    r"Latency test: press (\d+) at ([\d.]+) s presented (-?[\d.]+) ms after the key press "
+    r"\(drawing started at (-?[\d.]+) ms\)"
+)
+
+
+@dataclass
+class LoggedFlip:
+    """One flip of the marker as Moonlight logged it, on Moonlight's clock."""
+
+    number: int  # the latency test's press number
+    press: float  # seconds
+    present_ms: float  # key press to the marker's frame being presented
+    draw_ms: float  # key press to that frame's drawing starting
+
+    @property
+    def presented(self):
+        return self.press + self.present_ms / 1000
+
+
+def read_marker_log(path):
+    """The marker flips in Moonlight's latency test CSV, or in its log."""
+    flips = []
+    with open(path, encoding="utf-8", errors="replace") as f:
+        lines = [line for line in f if not line.startswith("#")]
+    if lines and lines[0].strip() == "press,press_s,present_ms,draw_ms":
+        for row in csv.DictReader(lines):
+            flips.append(LoggedFlip(int(row["press"]), float(row["press_s"]), float(row["present_ms"]), float(row["draw_ms"])))
+        return flips
+
+    for line in lines:
+        match = MOONLIGHT_FLIP.search(line)
+        if match:
+            number, press, present_ms, draw_ms = match.groups()
+            flips.append(LoggedFlip(int(number), float(press), float(present_ms), float(draw_ms)))
+    return flips
+
+
+def find_marker_log(path, camera_times):
+    """
+    Read the marker log at path and match it to the camera's flips. For a folder, every Moonlight-latency-test-*.csv
+    in it is tried, and the one matching the most flips is used, so the default folder finds the run that was filmed.
+    Returns the file used (or None), its flips, and the matched flip (or None) for each camera time.
+    """
+    unmatched = [None] * len(camera_times)
+    if path is None:
+        return None, [], unmatched
+    candidates = sorted(path.glob("Moonlight-latency-test-*.csv")) if path.is_dir() else [path]
+
+    best = (None, [], unmatched)
+    for candidate in candidates:
+        flips = read_marker_log(candidate)
+        matches = match_logged_flips(camera_times, flips)
+        if sum(m is not None for m in matches) > sum(m is not None for m in best[2]):
+            best = (candidate, flips, matches)
+    return best
+
+
+def match_logged_flips(camera_times, logged, tolerance=0.015):
+    """
+    Match the marker flips the camera saw to the ones Moonlight logged. The two have different clocks, so the offset
+    between them is found from the pattern of gaps: each pairing of a camera flip with a logged one proposes an
+    offset, and the offset that lines up the most flips wins. The logged time used is when the flip was presented, so
+    only the display's delay separates it from the camera's. That varies by up to a refresh, which the tolerance
+    allows for; the presses' random 300-700 ms gaps keep a wrong offset from lining up more than a flip or two.
+
+    Returns a list with the matched LoggedFlip, or None, for each camera time.
+    """
+    if not camera_times or not logged:
+        return [None] * len(camera_times)
+    camera = np.asarray(camera_times)
+    shown = np.array([f.presented for f in logged])
+    order = np.argsort(shown)
+    shown_sorted = shown[order]
+
+    def nearest(offset):
+        """For each camera flip, the index into shown_sorted of the nearest logged flip, and how far off it is."""
+        target = camera + offset
+        right = np.clip(np.searchsorted(shown_sorted, target), 1, len(shown_sorted) - 1)
+        left = right - 1
+        pick = np.where(np.abs(shown_sorted[left] - target) <= np.abs(shown_sorted[right] - target), left, right)
+        if len(shown_sorted) == 1:
+            pick = np.zeros_like(pick)
+        return pick, np.abs(shown_sorted[pick] - target)
+
+    best = None
+    for c in camera:
+        for s in shown:
+            offset = s - c
+            _, error = nearest(offset)
+            hits = int(np.sum(error <= tolerance))
+            residual = float(np.sum(error[error <= tolerance]))
+            if best is None or hits > best[0] or (hits == best[0] and residual < best[1]):
+                best = (hits, residual, offset)
+
+    # Settle the offset on the median of the matched flips, then match each flip at most once
+    pick, error = nearest(best[2])
+    matched = error <= tolerance
+    offset = best[2] + float(np.median(shown_sorted[pick[matched]] - (camera[matched] + best[2])))
+    pick, error = nearest(offset)
+
+    result = [None] * len(camera)
+    used = set()
+    for i in np.argsort(error):
+        if error[i] <= tolerance and pick[i] not in used:
+            used.add(pick[i])
+            result[i] = logged[order[pick[i]]]
+    return result
+
+
+# ---------------------------------------------------------------------------------------------------------------------
 # Debug images
 
 
@@ -558,9 +679,14 @@ def main():
     parser.add_argument("--out", type=Path, help="directory for the CSV and debug images (default: next to the video)")
     parser.add_argument("--stream-fps", type=float, help="stream frame rate, to express latencies in stream frames")
     parser.add_argument("--report", action="store_true", help="also write an HTML report, VIDEO.report.html")
+    parser.add_argument("--marker-log", "--moonlight-log", dest="marker_log", type=Path,
+                        help="Moonlight's latency test CSV, a folder of them, or its log, to add the marker's own delay "
+                             "and report the time from the key press to the host's answer being presented")
     args = parser.parse_args()
     if not args.video.is_file():
         sys.exit(f"No such file: {args.video}")
+    if args.marker_log and not args.marker_log.exists():
+        sys.exit(f"No such file or folder: {args.marker_log}")
 
     fps, fps_source = (args.fps, "--fps") if args.fps else probe_capture_fps(args.video)
     if not fps:
@@ -616,6 +742,13 @@ def main():
     extra_hosts = [h for h in host_flips if id(h) not in matched_hosts and local_flips and h.time > local_flips[0].time]
 
     latencies = [(h.time - l.time) * 1000 for l, h, _ in pairs]
+
+    # The marker's own delay from Moonlight's marker log, matched to the flips the camera saw
+    marker_log, logged_flips, camera_logs = find_marker_log(args.marker_log, [f.time for f in local_flips])
+    matched_log = dict(zip((id(f) for f in local_flips), camera_logs))
+    pair_logs = [matched_log.get(id(l)) for l, _, _ in pairs]
+    press_to_present = [lat + log.present_ms for lat, log in zip(latencies, pair_logs) if log is not None]
+    marker_delays = [log.present_ms for log in pair_logs if log is not None]
     same_direction = [(h.time - l.time) * 1000 for l, h, _ in pairs if l.rising == h.rising]
     opposite_direction = [(h.time - l.time) * 1000 for l, h, _ in pairs if l.rising != h.rising]
     # The input number should go up by one per pair. Builds before the Gray code fix showed the low bits of the full
@@ -639,8 +772,10 @@ def main():
     csv_path = stem.with_name(stem.name + ".latency.csv")
     with open(csv_path, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["input", "local_ms", "local_edge", "host_ms", "host_edge", "latency_ms", "host_input_seq", "local_ramp_ms", "host_ramp_ms"])
+        writer.writerow(["input", "local_ms", "local_edge", "host_ms", "host_edge", "latency_ms", "host_input_seq", "local_ramp_ms", "host_ramp_ms",
+                         "test_press", "marker_present_ms", "marker_draw_ms", "press_to_present_ms"])
         for i, (l, h, seq) in enumerate(pairs):
+            log = pair_logs[i]
             writer.writerow([
                 i + 1,
                 f"{l.time * 1000:.2f}",
@@ -651,6 +786,10 @@ def main():
                 seq,
                 f"{l.ramp * 1000:.2f}",
                 f"{h.ramp * 1000:.2f}",
+                log.number if log else "",
+                f"{log.present_ms:.2f}" if log else "",
+                f"{log.draw_ms:.2f}" if log else "",
+                f"{(h.time - l.time) * 1000 + log.present_ms:.2f}" if log else "",
             ])
 
     regions_path = stem.with_name(stem.name + ".regions.png")
@@ -689,6 +828,12 @@ def main():
         rise_median, fall_median = np.median(rising), np.median(falling)
         print(f"  balanced     {(rise_median + fall_median) / 2:6.2f} ms  (average of the rise and fall medians, which "
               f"cancels the display's rise/fall difference of {abs(rise_median - fall_median) / 2:.2f} ms each way)")
+    if args.marker_log:
+        print()
+        print(f"Marker log:  {marker_log.name if marker_log else 'none found in ' + str(args.marker_log)}; "
+              f"{len(logged_flips)} presses logged, {len(marker_delays)} of the {len(pairs)} pairs matched")
+        print(f"  marker, key press to its frame presented   {describe(marker_delays)}")
+        print(f"  key press to the trigger presented         {describe(press_to_present)}")
     print()
 
     def ramp(flips, rising_edge):
@@ -714,6 +859,9 @@ def main():
     if missed:
         notes.append(f"{len(missed)} marker flips had no trigger flip before the next marker flip, first at "
                      f"{missed[0].time:.3f} s.")
+    if args.marker_log and len(marker_delays) < len(pairs):
+        notes.append(f"Only {len(marker_delays)} of {len(pairs)} pairs matched a flip in the marker log. Check that the "
+                     "log is from the run that was filmed.")
     if notes:
         print()
     for note in notes:
@@ -741,9 +889,13 @@ def main():
             "missed": len(missed),
             "extra": len(extra_hosts),
             "ramps": (ramp(local_flips, True), ramp(local_flips, False), ramp(host_flips, True), ramp(host_flips, False)),
+            "marker_log": marker_log,
+            "marker_log_searched": args.marker_log,
+            "logged_flips": len(logged_flips),
         }
         presses = [
-            {"input": i + 1, "latency": (h.time - l.time) * 1000, "rising": l.rising, "host_rising": h.rising, "seq": seq}
+            {"input": i + 1, "latency": (h.time - l.time) * 1000, "rising": l.rising, "host_rising": h.rising, "seq": seq,
+             "marker_ms": pair_logs[i].present_ms if pair_logs[i] else None}
             for i, (l, h, seq) in enumerate(pairs)
         ]
         write_report(report_path, info, presses, notes, {"csv": csv_path, "regions": regions_path, "trace": trace_path})

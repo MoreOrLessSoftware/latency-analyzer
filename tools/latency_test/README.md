@@ -1,16 +1,22 @@
 # Latency test
 
-Measures input-to-photon latency of a stream with a phone camera. The test needs no clock sync and no footage of a
+Measures a stream's latency from a key press with a phone camera. The test needs no clock sync and no footage of a
 finger pressing a key, because both events it times appear on the same screen:
 
-- **Marker:** Moonlight's latency marker is a square drawn by the client. It flips between black and white the
-  moment the client sends a key or mouse press.
+- **Marker:** Moonlight's latency marker is a square drawn by the client. It flips between black and white when the
+  client sends a key or mouse press, and reaches the screen with the next frame the client draws.
 - **Trigger:** the `latency-test` app on the host draws a square in the middle of the screen. It flips when the
   press arrives, so the flip only shows on the client after a full trip through capture, encode, network, decode and
   display.
 
-A slow motion video of the client display shows both flips, and the time between them is the stream's latency. Any
-lag in the display itself cancels out, because both squares are on the same screen.
+A slow motion video of the client display shows both flips. Any lag in the display itself cancels out, because both
+squares are on the same screen.
+
+The time between the flips is not the whole latency from the key press, because the marker isn't on screen the
+moment the key is pressed either. It waits for the next frame the client draws, which with Moonlight's frame pacing
+is typically 5–20 ms, and longer at lower frame rates. During an automatic test (Space), Moonlight records that
+delay for every press in a marker log, and with it (`--marker-log`) the analyzer adds it on and reports the time from
+the key press to the trigger being presented.
 
 | File | What it is |
 |---|---|
@@ -24,7 +30,8 @@ lag in the display itself cancels out, because both squares are on the same scre
 - A Sunshine host with `latency-test.exe`. It is built with Sunshine (`ninja -C cmake-build-release latency-test`)
   and installed to `tools\`.
 - A Moonlight client with the latency marker: moonlight-qt, branch `latency-marker`. The marker works with the
-  D3D11VA, DXVA2, Vulkan (placebo) and SDL renderers.
+  D3D11VA, DXVA2, Vulkan (placebo) and SDL renderers. For the time from the key press, the client must also log the
+  marker's delay, which only branch `mlsoft-custom2` does so far.
 - A phone that films slow motion at 240 fps or more. Some phones save the real capture rate in the video file;
   Android does, in the `com.android.capture.fps` tag. When it doesn't, pass `--fps`.
 - Python 3 with `numpy` and `opencv-python-headless` (`python -m pip install numpy opencv-python-headless`).
@@ -77,14 +84,18 @@ lag in the display itself cancels out, because both squares are on the same scre
 
 ### Drag and drop (Windows)
 
-Drop one or more videos on `analyze.bat`. It asks two questions:
+Drop one or more videos on `analyze.bat`. It asks three questions:
 
 - **Stream resolution:** what Moonlight streamed at, for example `3840x2160` or `2560x1440`. This is the stream
   size, not the client display size.
 - **Stream frame rate:** for example `120`. It labels the results in stream frames. Enter `0` if you don't know it.
+- **Marker log:** where Moonlight's latency test CSVs are, to add the marker's own delay (see
+  [Moonlight's marker log](#moonlights-marker-log)). The default, `%TEMP%`, is where Moonlight writes them on
+  Windows, so it works as is when you analyse on the client. Otherwise drag in a CSV or a folder of them, or enter
+  `-` to skip it.
 
-Pressing Enter keeps the default shown in brackets. Set the `LATENCY_STREAM` and `LATENCY_STREAM_FPS` environment
-variables to change those defaults.
+Pressing Enter keeps the default shown in brackets. Set the `LATENCY_STREAM`, `LATENCY_STREAM_FPS` and
+`LATENCY_MARKER_LOG` environment variables to change those defaults.
 
 The results go to a `latency-results` folder next to each video. Each report opens in your browser when its
 video is done.
@@ -92,7 +103,7 @@ video is done.
 ### Command line
 
 ```
-python analyze_video.py VIDEO --stream 3840x2160 [--stream-fps 120] [--fps 240] [--report] [--out DIR] [--max-frames N]
+python analyze_video.py VIDEO --stream 3840x2160 [--stream-fps 120] [--fps 240] [--marker-log PATH] [--report] [--out DIR] [--max-frames N]
 ```
 
 | Option | Meaning |
@@ -100,6 +111,7 @@ python analyze_video.py VIDEO --stream 3840x2160 [--stream-fps 120] [--fps 240] 
 | `--stream WxH` | Stream resolution (required). The trigger's position is computed from it. |
 | `--stream-fps N` | Stream frame rate; the report then shows latency in frames and draws a gridline per frame. |
 | `--fps N` | Camera capture rate, if the file doesn't record it. The analyzer warns when the rate it reads is under 100 fps, because that is usually the playback rate of a slow motion video. |
+| `--marker-log PATH` | Moonlight's latency test CSV, a folder of them, or Moonlight's log, to add the marker's own delay and report the time from the key press. With a folder, the CSV that matches the video is used. `--moonlight-log` does the same. |
 | `--report` | Also write the HTML report. |
 | `--out DIR` | Output folder. The default is the video's folder. |
 | `--max-frames N` | Analyse only the start of the video. |
@@ -109,14 +121,36 @@ python analyze_video.py VIDEO --stream 3840x2160 [--stream-fps 120] [--fps 240] 
 | File | Contents |
 |---|---|
 | `VIDEO.report.html` | One self-contained page with these sections: <ul><li>headline figures</li><li>a chart of every press</li><li>groups by frame count</li><li>statistics</li><li>notes</li><li>both debug images</li></ul> |
-| `VIDEO.latency.csv` | One row per paired press, with these columns: <ul><li>flip times</li><li>edges</li><li>latency</li><li>host input number</li><li>10–90 % edge lengths</li></ul> |
+| `VIDEO.latency.csv` | One row per paired press, with these columns: <ul><li>flip times</li><li>edges</li><li>latency</li><li>host input number</li><li>10–90 % edge lengths</li><li>with the marker log: the test's press number, the marker's delay to being presented and to its drawing starting, and the key press to the trigger being presented</li></ul> |
 | `VIDEO.regions.png` | A camera frame with the sampled regions outlined. Check that the boxes sit on the squares. |
 | `VIDEO.trace.png` | Both squares' brightness over the whole video, with flips marked and each pair joined. |
 
 The console prints the same summary as plain text.
 
+### Moonlight's marker log
+
+Each automatic test (Space) gets a CSV next to Moonlight's log, `Moonlight-latency-test-<time>.csv`. On Windows that
+is `%TEMP%`, or Moonlight's own folder for a portable install. It gets a row for each of the test's presses, once the
+first frame showing its marker flip is presented, numbered as the timer counts them:
+
+```
+press,press_s,present_ms,draw_ms
+7,1234.567890,11.840,4.710
+```
+
+`press_s` is when the key was pressed, on Moonlight's clock, and `present_ms` and `draw_ms` are how long after it the
+frame was presented and started drawing. The same lines go to Moonlight's log, `Moonlight-<time>.log`, which the
+analyzer reads too. Keys you press yourself flip the marker but aren't logged. Moonlight keeps the latest 20 CSVs.
+
+The analyzer doesn't rely on the press numbers, so a CSV or log may hold presses that weren't filmed: it matches the
+logged presses to the filmed flips by the pattern of gaps between them. Only the test's presses get the key press to
+presented figure.
+
 ## Read the results
 
+- **Key press to presented,** with the marker log, is the time from the key press to the trigger's flip being
+  presented by the client. It adds the marker's logged delay to the latency below. Like the latency, it leaves out
+  the display's own delay: add the display's input lag for input to photon.
 - **Latency** is timed from the marker's flip to the trigger's flip, each at the point where its brightness
   crosses halfway. Camera exposure, display response and scanout blur each flip over several frames, but they
   blur both squares alike, so the halfway points stay comparable. The marker is sampled on the same rows as the

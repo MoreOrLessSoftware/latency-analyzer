@@ -178,6 +178,10 @@ def write_report(path, info, presses, notes, files):
     """
     stream_fps = info.get("stream_fps")
     latencies = [p["latency"] for p in presses]
+    # With Moonlight's marker log: the marker's own delay, and the key press to the trigger being presented
+    logged = [p for p in presses if p.get("marker_ms") is not None]
+    marker_delays = [p["marker_ms"] for p in logged]
+    press_to_present = [p["latency"] + p["marker_ms"] for p in logged]
     esc = html.escape
     out = []
     out.append(f'<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">'
@@ -188,9 +192,11 @@ def write_report(path, info, presses, notes, files):
 
     # Headline tiles
     tiles = []
+    if press_to_present:
+        tiles.append(("Key press to presented, median", f'{np.median(press_to_present):.2f} <small>ms</small>'))
     if latencies:
         values = np.asarray(latencies)
-        tiles.append(("Median latency", f'{np.median(values):.2f} <small>ms</small>'))
+        tiles.append(("Median latency" if not press_to_present else "Marker to trigger, median", f'{np.median(values):.2f} <small>ms</small>'))
         tiles.append(("Mean", f'{values.mean():.2f} <small>ms</small>'))
         tiles.append(("Spread (p10 to p90)", f'{np.percentile(values, 10):.1f}&ndash;{np.percentile(values, 90):.1f} <small>ms</small>'))
     tiles.append(("Presses paired", f'{len(presses)} <small>of {info["marker_flips"]}</small>'))
@@ -222,6 +228,9 @@ def write_report(path, info, presses, notes, files):
         out.append("<h2>Statistics</h2>")
         out.append('<div class="card"><table><thead><tr><th>ms</th><th>n</th><th>median</th><th>mean</th><th>sd</th><th>p10</th><th>p90</th><th>min</th><th>max</th></tr></thead><tbody>')
         out.append(stats_row("all", latencies))
+        if logged:
+            out.append(stats_row("marker delay (marker log)", marker_delays))
+            out.append(stats_row("key press to presented", press_to_present))
         out.append(stats_row("marker turned white", [p["latency"] for p in presses if p["rising"]]))
         out.append(stats_row("marker turned black", [p["latency"] for p in presses if not p["rising"]]))
         opposite = [p["latency"] for p in presses if p["rising"] != p["host_rising"]]
@@ -241,14 +250,30 @@ def write_report(path, info, presses, notes, files):
                   f'unanswered {info["missed"]}, unpaired trigger {info["extra"]}'),
         ("Edges, 10&ndash;90 %", f'marker rise {info["ramps"][0]}, fall {info["ramps"][1]}; trigger rise {info["ramps"][2]}, fall {info["ramps"][3]}'),
     ]
+    if info.get("marker_log_searched") and not info.get("marker_log"):
+        rows.append(("Marker log", f'none matching found in {esc(str(info["marker_log_searched"]))}'))
+    if info.get("marker_log"):
+        rows.append(("Marker log", f'{esc(Path(info["marker_log"]).name)}: {info["logged_flips"]} presses logged, '
+                                      f'{len(logged)} of {len(presses)} presses matched'))
     out.append('<div class="card"><dl>' + "".join(f"<dt>{k}</dt><dd>{v}</dd>" for k, v in rows) + "</dl></div>")
+    if logged:
+        out.append('<p class="legend">The latency above runs from the marker appearing to the trigger appearing. The marker '
+                   'only appears with the next frame the client draws, so Moonlight logs how long after the key press that '
+                   'frame was presented. Adding the two gives the key press to the trigger being presented. Neither '
+                   'includes the delay of the display itself.</p>')
 
     if presses:
         out.append('<h2>Per press</h2><div class="card"><details><summary>Show all presses</summary><table><thead><tr><th>Press</th><th>Latency ms</th>'
-                   + ("<th>Frames</th>" if stream_fps else "") + "<th>Marker</th><th>Trigger</th><th>Host input #</th></tr></thead><tbody>")
+                   + ("<th>Frames</th>" if stream_fps else "")
+                   + ("<th>Marker delay ms</th><th>Press to presented ms</th>" if logged else "")
+                   + "<th>Marker</th><th>Trigger</th><th>Host input #</th></tr></thead><tbody>")
         for p in presses:
             frames = f'<td>{p["latency"] / (1000 / stream_fps):.2f}</td>' if stream_fps else ""
-            out.append(f'<tr><td>{p["input"]}</td><td>{p["latency"]:.2f}</td>{frames}<td>{"rise" if p["rising"] else "fall"}</td>'
+            delay = ""
+            if logged:
+                delay = (f'<td>{p["marker_ms"]:.2f}</td><td>{p["latency"] + p["marker_ms"]:.2f}</td>' if p.get("marker_ms") is not None
+                         else "<td>-</td><td>-</td>")
+            out.append(f'<tr><td>{p["input"]}</td><td>{p["latency"]:.2f}</td>{frames}{delay}<td>{"rise" if p["rising"] else "fall"}</td>'
                        f'<td>{"rise" if p["host_rising"] else "fall"}</td><td>{p["seq"]}</td></tr>')
         out.append("</tbody></table></details></div>")
 

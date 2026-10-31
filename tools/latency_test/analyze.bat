@@ -1,7 +1,8 @@
 @echo off
 rem Drag one or more slow motion videos of the latency test onto this file to analyse them.
-rem Asks for the stream resolution and frame rate once, writes the results to a latency-results folder next to
-rem each video and opens each HTML report. Set LATENCY_STREAM and LATENCY_STREAM_FPS to change the defaults.
+rem Asks for the stream resolution and frame rate once, and where Moonlight's latency test CSVs are, writes the
+rem results to a latency-results folder next to each video and opens each HTML report. Set LATENCY_STREAM,
+rem LATENCY_STREAM_FPS and LATENCY_MARKER_LOG to change the defaults.
 setlocal EnableDelayedExpansion
 
 set "SCRIPT=%~dp0analyze_video.py"
@@ -27,13 +28,22 @@ set /p "STREAM_FPS=Stream frame rate, 0 if unknown [%LATENCY_STREAM_FPS%]: "
 if not defined STREAM_FPS set "STREAM_FPS=%LATENCY_STREAM_FPS%"
 set "FPS_ARG="
 if not "%STREAM_FPS%"=="0" set "FPS_ARG=--stream-fps %STREAM_FPS%"
+rem Moonlight writes a CSV for each latency test to %TEMP% on Windows. With a folder, the analyzer picks the CSV
+rem that matches each video.
+if not defined LATENCY_MARKER_LOG set "LATENCY_MARKER_LOG=%TEMP%"
+set "MARKER_LOG="
+set "LOG_ARG="
+set /p "MARKER_LOG=Moonlight latency test CSV, or a folder of them, - to skip [%LATENCY_MARKER_LOG%]: "
+if not defined MARKER_LOG set "MARKER_LOG=%LATENCY_MARKER_LOG%"
+set "MARKER_LOG=!MARKER_LOG:"=!"
+if not "!MARKER_LOG!"=="-" set LOG_ARG=--marker-log "!MARKER_LOG!"
 
 set FAILED=0
 for %%V in (%*) do (
   echo.
   echo ===== %%~nxV =====
   set "OUT=%%~dpVlatency-results"
-  python "%SCRIPT%" "%%~fV" --stream %STREAM% !FPS_ARG! --report --out "!OUT!"
+  python "%SCRIPT%" "%%~fV" --stream %STREAM% !FPS_ARG! !LOG_ARG! --report --out "!OUT!"
   if errorlevel 1 (
     set FAILED=1
   ) else (
