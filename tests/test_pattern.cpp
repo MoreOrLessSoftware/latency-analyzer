@@ -281,7 +281,7 @@ TEST(LatencyTestPatternTest, StatusTextDescribesPresentation) {
   status.auto_max_ms = 400;
   status.latency_cam_port = 48100;
   EXPECT_EQ(latency_test::status_text(status),
-            "120 fps (the display's refresh) \xC2\xB7 display 120 Hz \xC2\xB7 v-sync off, tearing\n"
+            "120 fps (the display's refresh) \xC2\xB7 display 120 Hz \xC2\xB7 v-sync off, tearing (V toggles)\n"
             "presenting 119.8 fps \xC2\xB7 auto flips every 150\xE2\x80\x93" "400 ms \xC2\xB7 Latency Cam port 48100");
 
   status.fps = 117.5;
@@ -292,8 +292,12 @@ TEST(LatencyTestPatternTest, StatusTextDescribesPresentation) {
   status.auto_flip = false;
   status.latency_cam_port = 0;
   EXPECT_EQ(latency_test::status_text(status),
-            "117.5 fps (--fps) \xC2\xB7 display rate unknown \xC2\xB7 v-sync on\n"
+            "117.5 fps (--fps) \xC2\xB7 display rate unknown \xC2\xB7 v-sync on (V toggles)\n"
             "presenting \xE2\x80\xA6 \xC2\xB7 flips on key presses \xC2\xB7 Latency Cam off");
+
+  // At the display's own rate, v-sync lets the display set the pace
+  status.fps_from_display = true;
+  EXPECT_NE(latency_test::status_text(status).find("v-sync on, paced by the display (V toggles)"), std::string::npos);
 
   status.vsync = false;
   status.tearing = false;

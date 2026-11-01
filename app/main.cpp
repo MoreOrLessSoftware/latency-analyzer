@@ -5,7 +5,8 @@
  * Run it as a Sunshine app and stream it to the client under test. It draws the test pattern described in
  * pattern.h and answers every key press (Esc quits) or mouse button press by presenting a frame with the trigger patch flipped,
  * as soon as the input arrives: it does not wait for the next background frame or, unless --vsync is passed, for
- * vertical blank. With --auto it also flips the trigger on its own at random intervals. Each input and the frame
+ * vertical blank. With --auto it also flips the trigger on its own at random intervals, on the next scheduled frame
+ * rather than with an extra one, so the frame cadence stays steady. Each input and the frame
  * that answered it are logged to a CSV file with QueryPerformanceCounter timestamps, and every frame's present time to
  * a second CSV, so host side delays can be lined up with Sunshine and client logs.
  *
@@ -220,6 +221,7 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
     HWND hwnd {};  ///< Test window.
     bool running = true;  ///< Cleared when the window closes.
     bool resize_pending = false;  ///< Set when the window size changed.
+    bool toggle_vsync = false;  ///< Set when V was pressed.
     int width {};  ///< Current back buffer width.
     int height {};  ///< Current back buffer height.
     latency_test::layout_t layout {};  ///< Pattern layout for the current size.
@@ -480,6 +482,13 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
       else if (vkey == VK_ESCAPE) {
         // Esc quits instead of counting as an input
         PostMessageW(app.hwnd, WM_CLOSE, 0, 0);
+      }
+      else if (vkey == 'V') {
+        // V toggles v-sync instead of counting as an input
+        if (!app.keys_down[vkey]) {
+          app.keys_down[vkey] = true;
+          app.toggle_vsync = true;
+        }
       }
       else if (!app.keys_down[vkey]) {
         app.keys_down[vkey] = true;
@@ -796,12 +805,13 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
     if (app.frames_log) {
       std::fputs(
         std::format(
-          "{},{:.1f},{:.1f},{:.1f},{}\n",
+          "{},{:.1f},{:.1f},{:.1f},{},{}\n",
           app.frame,
           qpc_to_us(app, render_qpc),
           qpc_to_us(app, present_qpc),
           qpc_to_us(app, presented_qpc),
-          app.shown_seq
+          app.shown_seq,
+          app.options.vsync ? 1 : 0
         )
           .c_str(),
         app.frames_log
@@ -916,8 +926,27 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
       std::fflush(app.log);
     }
     if (app.frames_log) {
-      std::fputs((header + "frame,render_us,present_call_us,present_return_us,input_seq\n").c_str(), app.frames_log);
+      std::fputs((header + "frame,render_us,present_call_us,present_return_us,input_seq,vsync\n").c_str(), app.frames_log);
       std::fflush(app.frames_log);
+    }
+  }
+
+  /**
+   * @brief Turn v-sync on or off, and note the change in the frames log and on screen.
+   *
+   * @param app App state.
+   * @param on Whether presents should wait for vertical blank.
+   */
+  void set_vsync(app_t &app, bool on) {
+    app.options.vsync = on;
+    app.status.vsync = on;
+    app.status.tearing = !on && app.tearing;
+    // Count the presented rate afresh, and redraw the text on the next frame
+    app.rate_window_qpc = 0;
+    app.status.measured_fps = 0;
+    app.status_text.clear();
+    if (app.frames_log) {
+      std::fputs(std::format("# vsync={} from frame {}\n", on ? 1 : 0, app.frame).c_str(), app.frames_log);
     }
   }
 
@@ -1090,13 +1119,21 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
         }
       }
 
-      // Inputs are answered right away; the background only moves on at the chosen rate.
+      if (app.toggle_vsync) {
+        app.toggle_vsync = false;
+        set_vsync(app, !app.options.vsync);
+      }
+
+      // Inputs are answered right away; the background only moves on at the chosen rate. With v-sync at the
+      // display's own rate, Present sets the pace instead: it blocks until the display takes the last frame.
       const std::int64_t now = qpc_now();
-      if (app.options.auto_flip && now >= app.next_auto_qpc) {
+      const bool paced_by_display = app.options.vsync && app.status.fps_from_display;
+      const bool frame_due = paced_by_display || now >= next_frame;
+      // An automatic flip waits for the next scheduled frame instead of adding one, so the cadence stays steady
+      if (frame_due && app.options.auto_flip && now >= app.next_auto_qpc) {
         queue_input(app, 'a', 0, now);
         schedule_auto_flip(app, now);
       }
-      const bool frame_due = now >= next_frame;
       if (!app.pending.empty() || frame_due) {
         render(app);
         if (frame_due) {
@@ -1108,9 +1145,8 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
         continue;
       }
 
-      const std::int64_t wake = app.options.auto_flip ? std::min(next_frame, app.next_auto_qpc) : next_frame;
       LARGE_INTEGER due;
-      due.QuadPart = -std::max<std::int64_t>(1, (wake - now) * 10'000'000 / app.qpc_frequency);
+      due.QuadPart = -std::max<std::int64_t>(1, (next_frame - now) * 10'000'000 / app.qpc_frequency);
       SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE);
       MsgWaitForMultipleObjectsEx(1, &timer, INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
     }

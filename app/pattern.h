@@ -243,7 +243,8 @@ namespace latency_test {
     "  --log <path>     CSV log of inputs and the frames that answered them\n"
     "                   (default: %TEMP%\\sunshine_latency_test.csv). Every frame's\n"
     "                   present time goes to the same name ending .frames.csv.\n"
-    "  --auto           Flip the trigger on its own every 150 to 400 ms, at random.\n"
+    "  --auto           Flip the trigger on its own every 150 to 400 ms, at random, on\n"
+    "                   the next scheduled frame (key presses still get an extra frame).\n"
     "  --auto-interval <min>-<max>\n"
     "                   Interval range for --auto in ms, e.g. 100-300 (implies --auto).\n"
     "  --time-port <n>  Port answering Latency Cam: clock sync on UDP and uploads on TCP\n"
@@ -255,8 +256,8 @@ namespace latency_test {
     "  --python <path>  Python to run it with (default: python.exe or py.exe on PATH).\n"
     "  --help           Show this text.\n"
     "\n"
-    "Any key press (except Esc) or mouse button press flips the trigger patch,\n"
-    "as does --auto.\n"
+    "Any key press (except Esc and V) or mouse button press flips the trigger patch,\n"
+    "as does --auto. V toggles v-sync.\n"
     "The band at the bottom shows the host clock and the time since the last input, in ms.\n"
     "Close with Esc, Alt+F4 or by ending the stream.\n";
 
@@ -404,8 +405,13 @@ namespace latency_test {
     };
     std::string text = number(status.fps) + " fps" + (status.fps_from_display ? " (the display's refresh)" : " (--fps)");
     text += status.refresh_hz > 0 ? " \xC2\xB7 display " + std::to_string(status.refresh_hz) + " Hz" : " \xC2\xB7 display rate unknown";
-    text += status.vsync ? " \xC2\xB7 v-sync on" : status.tearing ? " \xC2\xB7 v-sync off, tearing" : " \xC2\xB7 v-sync off (no tearing support)";
-    text += "\n";
+    if (status.vsync) {
+      text += status.fps_from_display ? " \xC2\xB7 v-sync on, paced by the display" : " \xC2\xB7 v-sync on";
+    }
+    else {
+      text += status.tearing ? " \xC2\xB7 v-sync off, tearing" : " \xC2\xB7 v-sync off (no tearing support)";
+    }
+    text += " (V toggles)\n";
     text += status.measured_fps > 0 ? "presenting " + number(status.measured_fps) + " fps" : "presenting \xE2\x80\xA6";
     text += status.auto_flip ? " \xC2\xB7 auto flips every " + number(status.auto_min_ms) + "\xE2\x80\x93" + number(status.auto_max_ms) + " ms" : " \xC2\xB7 flips on key presses";
     text += status.latency_cam_port > 0 ? " \xC2\xB7 Latency Cam port " + std::to_string(status.latency_cam_port) : " \xC2\xB7 Latency Cam off";

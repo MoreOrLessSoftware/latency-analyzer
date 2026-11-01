@@ -133,12 +133,12 @@ GoogleTest at configure time; pass `-DBUILD_TESTS=OFF` to skip them.
 
    | Option | Effect |
    |---|---|
-   | `--vsync` | Waits for vertical blank. By default the app presents straight away, with tearing, so it adds no wait of its own. |
+   | `--vsync` | Starts with v-sync on: waits for vertical blank. By default the app presents straight away, with tearing, so it adds no wait of its own. **V** toggles it while running. |
    | `--noise <0..1>` | Background noise amplitude, default 0.5. The noise keeps the encoder near its bitrate; 0 turns it off. |
    | `--no-noise` | Flat gray background, so frames stay small (same as `--noise 0`). |
    | `--fps <n>` | Background update rate. The default is the display's refresh rate. |
    | `--log <path>` | CSV log of each input and the frame that answered it, timed with the host's QPC. The default is `%TEMP%\sunshine_latency_test.csv`. Every frame's render and present times go to the same name ending `.frames.csv`. |
-   | `--auto` | Flips the trigger on its own every 150–400 ms, at random, as well as on key presses. |
+   | `--auto` | Flips the trigger on its own every 150–400 ms, at random, as well as on key presses. Automatic flips land on the next scheduled frame, so the frame rate stays steady. |
    | `--auto-interval <min>-<max>` | The interval range for `--auto` in ms, for example `100-300`. Implies `--auto`. |
    | `--time-port <n>` | Port answering Latency Cam, default 48100: clock sync over UDP and uploads over TCP. Allow `latency-test.exe` through the firewall when asked. |
    | `--no-time-server` | Doesn't answer clock sync requests or accept uploads. |
@@ -156,8 +156,14 @@ GoogleTest at configure time; pass `-DBUILD_TESTS=OFF` to skip them.
      Cam port
 
    By default the app presents without v-sync, with tearing. It redraws the background on a timer at `--fps`, or at
-   the display's refresh rate without it, and presents each flip straight away as an extra frame, so the presented
-   rate runs a little above the target while flips happen.
+   the display's refresh rate without it. A key press is answered straight away with an extra frame, so the presented
+   rate runs a little above the target while keys are pressed. Automatic flips (`--auto`) are shown on the next
+   scheduled frame instead, which keeps the cadence steady for measuring pacing.
+
+   Press **V** (on the host or through Moonlight) to toggle v-sync; it doesn't count as a flip. With v-sync on and no
+   `--fps`, the display sets the pace: each present waits for the display to take the previous frame, so frames
+   follow its refresh instead of the app's timer. That adds about a frame of latency. Each frame's line in
+   `.frames.csv` records whether v-sync was on, and each toggle adds a `# vsync=` comment line.
 3. Press **Ctrl+Alt+Shift+T** in Moonlight to turn the marker on. It appears a quarter of the way across the screen,
    on the same rows as the trigger, with a timer under it showing the time since it last flipped.
 
