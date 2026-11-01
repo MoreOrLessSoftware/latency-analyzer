@@ -188,6 +188,36 @@ namespace latency_test {
   }
 
   /**
+   * @brief Find the analyzer's latest progress line, "read 1500/2488 frames", in the end of its output.
+   *
+   * @param output The analyzer's output, or its last few kilobytes.
+   * @param done Set to the frames read.
+   * @param total Set to the frames in the video.
+   * @return True when a progress line was found.
+   */
+  inline bool parse_analysis_progress(std::string_view output, int &done, int &total) {
+    constexpr std::string_view marker = "read ";
+    for (auto at = output.rfind(marker); at != std::string_view::npos; at = at == 0 ? std::string_view::npos : output.rfind(marker, at - 1)) {
+      const char *p = output.data() + at + marker.size();
+      const char *end = output.data() + output.size();
+      int a = 0;
+      int b = 0;
+      const auto first = std::from_chars(p, end, a);
+      if (first.ec != std::errc {} || first.ptr == end || *first.ptr != '/') {
+        continue;
+      }
+      const auto second = std::from_chars(first.ptr + 1, end, b);
+      if (second.ec != std::errc {} || b <= 0 || std::string_view(second.ptr, end - second.ptr).rfind(" frames", 0) != 0) {
+        continue;
+      }
+      done = a;
+      total = b;
+      return true;
+    }
+    return false;
+  }
+
+  /**
    * @brief Escape text for a JSON string.
    *
    * @param text Text to escape.

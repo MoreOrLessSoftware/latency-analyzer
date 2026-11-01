@@ -87,6 +87,26 @@ namespace latency_test {
     }
 
     /**
+     * @brief Read the last few kilobytes of a file, which may still be being written.
+     *
+     * @param path File to read.
+     * @param text Set to its end.
+     * @return True when the file could be read.
+     */
+    bool read_tail(const std::filesystem::path &path, std::string &text) {
+      std::ifstream in(path, std::ios::binary | std::ios::ate);
+      if (!in) {
+        return false;
+      }
+      const std::streamoff size = in.tellg();
+      const std::streamoff from = std::max<std::streamoff>(0, size - 4096);
+      in.seekg(from);
+      text.assign(static_cast<std::size_t>(size - from), '\0');
+      in.read(text.data(), size - from);
+      return true;
+    }
+
+    /**
      * @brief The last lines of a text file.
      *
      * @param path File to read.
@@ -181,10 +201,14 @@ namespace latency_test {
   upload_server_t::~upload_server_t() {
     stop();
     std::lock_guard lock(mutex_);
-    for (auto &[name, handle] : analyses_) {
-      CloseHandle(handle);
+    for (auto &[name, analysis] : analyses_) {
+      CloseHandle(analysis.process);
     }
     analyses_.clear();
+  }
+
+  std::filesystem::path upload_server_t::run_dir(const std::string &name) const {
+    return config_.results_dir / name;
   }
 
   std::string upload_server_t::start(int port, analysis_config_t config) {
@@ -290,20 +314,34 @@ namespace latency_test {
           if (request->expect_continue) {
             send_all(client, "HTTP/1.1 100 Continue\r\n\r\n");
           }
-          const auto final_path = config_.results_dir / (route.name + (route.kind == route_e::upload_video ? ".mp4" : ".camera.json"));
+          const bool video = route.kind == route_e::upload_video;
+          const auto dir = run_dir(route.name);
+          std::error_code error;
+          std::filesystem::create_directories(dir, error);
+          if (error) {
+            respond_error(client, "500 Internal Server Error", "cannot create " + dir.string() + ": " + error.message());
+            return;
+          }
+          const auto final_path = dir / (route.name + (video ? ".mp4" : ".camera.json"));
           auto part_path = final_path;
           part_path += L".part";
 
-          // Marked busy until the file is in place, however this ends, so closing the app can warn about it
-          uploading_ = true;
+          // Tracked until the file is in place, however this ends, so closing the app can show the progress
+          {
+            std::lock_guard lock(mutex_);
+            upload_name_ = route.name + (video ? ".mp4" : ".camera.json");
+            upload_received_ = 0;
+            upload_total_ = length;
+          }
 
           struct clear_t {
-            std::atomic<bool> &flag;  ///< Flag to clear.
+            upload_server_t &server;  ///< Server whose upload ended.
 
             ~clear_t() {
-              flag = false;
+              std::lock_guard lock(server.mutex_);
+              server.upload_name_.clear();
             }
-          } clear_uploading {uploading_};
+          } clear_upload {*this};
 
           {
             std::ofstream out(part_path, std::ios::binary | std::ios::trunc);
@@ -325,17 +363,24 @@ namespace latency_test {
               }
               out.write(buffer, received);
               remaining -= static_cast<std::uint64_t>(received);
+              std::lock_guard lock(mutex_);
+              upload_received_ = length - remaining;
             }
             if (!out.flush()) {
               respond_error(client, "500 Internal Server Error", "write failed");
               return;
             }
           }
-          std::error_code error;
           std::filesystem::rename(part_path, final_path, error);
           if (error) {
             respond_error(client, "500 Internal Server Error", error.message());
             return;
+          }
+          if (video) {
+            // Latency Cam starts the analysis next; until it does, closing the app would cut that short
+            std::lock_guard lock(mutex_);
+            awaiting_analysis_ = route.name;
+            awaiting_since_ms_ = GetTickCount64();
           }
           respond(client, "201 Created", "application/json", std::format("{{\"saved\":{}}}", length));
           return;
@@ -359,7 +404,7 @@ namespace latency_test {
       case route_e::report:
         {
           std::string html;
-          if (!read_file(config_.results_dir / (route.name + ".report.html"), html)) {
+          if (!read_file(run_dir(route.name) / (route.name + ".report.html"), html)) {
             respond_error(client, "404 Not Found", "no report for " + route.name);
             return;
           }
@@ -376,15 +421,16 @@ namespace latency_test {
   bool upload_server_t::start_analysis(const std::string &name, std::string &error) {
     std::lock_guard lock(mutex_);
     if (const auto it = analyses_.find(name); it != analyses_.end()) {
-      if (WaitForSingleObject(it->second, 0) == WAIT_TIMEOUT) {
+      if (WaitForSingleObject(it->second.process, 0) == WAIT_TIMEOUT) {
         return true;  // Already running
       }
-      CloseHandle(it->second);
+      CloseHandle(it->second.process);
       analyses_.erase(it);
     }
 
-    const auto video = config_.results_dir / (name + ".mp4");
-    const auto timing = config_.results_dir / (name + ".camera.json");
+    const auto dir = run_dir(name);
+    const auto video = dir / (name + ".mp4");
+    const auto timing = dir / (name + ".camera.json");
     std::error_code fs_error;
     if (!std::filesystem::is_regular_file(video, fs_error) || !std::filesystem::is_regular_file(timing, fs_error)) {
       error = "upload " + name + ".mp4 and " + name + ".camera.json first";
@@ -422,8 +468,8 @@ namespace latency_test {
 
     // Keep a copy of the logs with the recording: the app starts them afresh each run, so without it the recording
     // could not be analysed again later
-    const auto host_log = config_.results_dir / (name + ".host.csv");
-    const auto host_frames_log = config_.results_dir / (name + ".host.frames.csv");
+    const auto host_log = dir / (name + ".host.csv");
+    const auto host_frames_log = dir / (name + ".host.frames.csv");
     // The same rule as frames_log_path() in pattern.h: .csv becomes .frames.csv, anything else gets it appended
     auto frames_source = config_.host_log;
     if (frames_source.extension() == L".csv") {
@@ -441,14 +487,14 @@ namespace latency_test {
 
     std::wstring command = launcher + L" " + quote(video.wstring()) +
                            std::format(L" --stream {}x{}", config_.width, config_.height) + L" --host-log " + quote(host_log.wstring()) +
-                           L" --out " + quote(config_.results_dir.wstring()) + L" --report";
+                           L" --out " + quote(dir.wstring()) + L" --report";
     if (config_.fps > 0) {
       command += std::format(L" --stream-fps {}", config_.fps);
     }
 
-    // The analyzer's output goes to NAME.analysis.txt, which a failed status quotes
+    // The analyzer's output goes to NAME.analysis.txt, which a failed status quotes and the progress comes from
     SECURITY_ATTRIBUTES inherit {sizeof(inherit), nullptr, TRUE};
-    const auto log_path = config_.results_dir / (name + ".analysis.txt");
+    const auto log_path = dir / (name + ".analysis.txt");
     const HANDLE log = CreateFileW(log_path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, &inherit, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (log == INVALID_HANDLE_VALUE) {
       error = "cannot write " + log_path.string();
@@ -463,65 +509,103 @@ namespace latency_test {
     PROCESS_INFORMATION process {};
     std::vector<wchar_t> command_line(command.begin(), command.end());
     command_line.push_back(L'\0');
-    const BOOL started = CreateProcessW(nullptr, command_line.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS, nullptr, config_.results_dir.c_str(), &startup, &process);
+    const BOOL started = CreateProcessW(nullptr, command_line.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS, nullptr, dir.c_str(), &startup, &process);
     CloseHandle(log);
     if (!started) {
-      error = std::format("could not start Python ({})", GetLastError());
+      error = std::format("could not start the analyzer ({})", GetLastError());
       return false;
     }
     CloseHandle(process.hThread);
     std::error_code ignored;
-    std::filesystem::remove(config_.results_dir / (name + ".summary.json"), ignored);
-    analyses_[name] = process.hProcess;
+    std::filesystem::remove(dir / (name + ".summary.json"), ignored);
+    analyses_[name] = analysis_t {process.hProcess};
+    if (awaiting_analysis_ == name) {
+      awaiting_analysis_.clear();
+    }
     return true;
   }
 
-  std::string upload_server_t::busy_description() {
-    std::vector<std::string> analysing;
-    {
-      std::lock_guard lock(mutex_);
-      for (const auto &[name, handle] : analyses_) {
-        if (WaitForSingleObject(handle, 0) == WAIT_TIMEOUT) {
-          analysing.push_back(name);
+  upload_server_t::activity_t upload_server_t::activity() {
+    constexpr std::uint64_t grace_ms = 15'000;
+    const std::uint64_t now = GetTickCount64();
+    std::lock_guard lock(mutex_);
+    activity_t activity;
+
+    if (!upload_name_.empty()) {
+      activity.busy = true;
+      activity.description = std::format("Receiving {} from Latency Cam: {:.0f} of {:.0f} MB", upload_name_, upload_received_ / 1e6, upload_total_ / 1e6);
+      activity.percent = upload_total_ ? static_cast<int>(upload_received_ * 100 / upload_total_) : -1;
+      return activity;
+    }
+
+    for (auto &[name, analysis] : analyses_) {
+      if (WaitForSingleObject(analysis.process, 0) == WAIT_TIMEOUT) {
+        activity.busy = true;
+        // The analyzer reports "read N/M frames" as it goes; reading the video is most of its work
+        std::string text;
+        read_tail(run_dir(name) / (name + ".analysis.txt"), text);
+        int done = 0;
+        int total = 0;
+        if (parse_analysis_progress(text, done, total) && done < total) {
+          activity.description = std::format("Analysing {}: reading frames, {} of {}", name, done, total);
+          activity.percent = done * 95 / total;
         }
+        else if (total > 0) {
+          activity.description = std::format("Analysing {}: working out the results", name);
+          activity.percent = 97;
+        }
+        else {
+          activity.description = std::format("Analysing {}: starting", name);
+        }
+        return activity;
+      }
+      if (analysis.finished_ms == 0) {
+        analysis.finished_ms = now;
       }
     }
-    std::string text;
-    if (uploading_) {
-      text = "is still receiving a recording from Latency Cam";
-    }
-    if (!analysing.empty()) {
-      text += text.empty() ? "is still analysing " : ", and analysing ";
-      for (std::size_t i = 0; i < analysing.size(); ++i) {
-        text += (i == 0 ? "" : i + 1 == analysing.size() ? " and " : ", ") + analysing[i];
+
+    // Finished, but give Latency Cam a moment to fetch the result before the app goes away
+    for (const auto &[name, analysis] : analyses_) {
+      if (!analysis.delivered && now - analysis.finished_ms < grace_ms) {
+        activity.busy = true;
+        activity.description = std::format("Analysed {}; waiting for Latency Cam to fetch the results", name);
+        activity.percent = 100;
+        return activity;
       }
     }
-    return text;
+    if (!awaiting_analysis_.empty() && now - awaiting_since_ms_ < grace_ms) {
+      activity.busy = true;
+      activity.description = std::format("Received {}; waiting for Latency Cam to start the analysis", awaiting_analysis_);
+      return activity;
+    }
+    return activity;
   }
 
   std::string upload_server_t::status_json(const std::string &name) {
-    const auto summary_path = config_.results_dir / (name + ".summary.json");
+    const auto dir = run_dir(name);
     const auto report_url = "/recordings/" + name + "/report";
     {
       std::lock_guard lock(mutex_);
       if (const auto it = analyses_.find(name); it != analyses_.end()) {
-        if (WaitForSingleObject(it->second, 0) == WAIT_TIMEOUT) {
+        if (WaitForSingleObject(it->second.process, 0) == WAIT_TIMEOUT) {
           return "{\"state\":\"analyzing\"}";
         }
+        // The phone has its answer now, so the app may close
+        it->second.delivered = true;
         DWORD code = 1;
-        GetExitCodeProcess(it->second, &code);
+        GetExitCodeProcess(it->second.process, &code);
         if (code != 0) {
-          return std::format("{{\"state\":\"failed\",\"exit_code\":{},\"output\":\"{}\"}}", code, json_escape(tail(config_.results_dir / (name + ".analysis.txt"), 15)));
+          return std::format("{{\"state\":\"failed\",\"exit_code\":{},\"output\":\"{}\"}}", code, json_escape(tail(dir / (name + ".analysis.txt"), 15)));
         }
       }
     }
     std::string summary;
-    if (read_file(summary_path, summary)) {
+    if (read_file(dir / (name + ".summary.json"), summary)) {
       return std::format("{{\"state\":\"done\",\"report\":\"{}\",\"summary\":{}}}", json_escape(report_url), summary);
     }
     std::error_code error;
-    const bool uploaded = std::filesystem::is_regular_file(config_.results_dir / (name + ".mp4"), error) &&
-                          std::filesystem::is_regular_file(config_.results_dir / (name + ".camera.json"), error);
+    const bool uploaded = std::filesystem::is_regular_file(dir / (name + ".mp4"), error) &&
+                          std::filesystem::is_regular_file(dir / (name + ".camera.json"), error);
     return uploaded ? "{\"state\":\"uploaded\"}" : "{\"state\":\"missing\"}";
   }
 }  // namespace latency_test

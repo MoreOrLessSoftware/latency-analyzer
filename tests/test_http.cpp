@@ -74,3 +74,18 @@ TEST(HttpTest, ComparesIgnoringCase) {
   EXPECT_FALSE(latency_test::iequals("Content-Length", "Content-Lengths"));
   EXPECT_EQ(latency_test::trim(" \tx y\r"), "x y");
 }
+
+TEST(HttpTest, FindsTheAnalyzersLatestProgress) {
+  int done = 0;
+  int total = 0;
+  EXPECT_TRUE(latency_test::parse_analysis_progress("Reading x.mp4\n  read 100/2488 frames\n  read 200/2488 frames\n", done, total));
+  EXPECT_EQ(done, 200);
+  EXPECT_EQ(total, 2488);
+  // Later output that isn't progress, and lookalikes, are skipped
+  EXPECT_TRUE(latency_test::parse_analysis_progress("  read 300/400 frames\nWe read 5/x things\nalready read 7/8 bytes\n", done, total));
+  EXPECT_EQ(done, 300);
+  EXPECT_EQ(total, 400);
+  EXPECT_FALSE(latency_test::parse_analysis_progress("Reading x.mp4\n", done, total));
+  EXPECT_FALSE(latency_test::parse_analysis_progress("read 5/0 frames", done, total));
+  EXPECT_FALSE(latency_test::parse_analysis_progress("", done, total));
+}

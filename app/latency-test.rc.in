@@ -1,0 +1,2 @@
+// Embeds the application manifest (resource type 24, id 1). CMake fills in the absolute path.
+1 24 "@LATENCY_TEST_MANIFEST@"

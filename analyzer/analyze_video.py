@@ -344,7 +344,8 @@ def read_video(path, canvas, layout, max_frames=None):
         if reference is None and corners is not None and len(frames) >= min(total // 2, 120):
             reference = (cv2.cvtColor(small, cv2.COLOR_GRAY2BGR), transform.copy(), len(frames) - 1)
 
-        if len(frames) % 500 == 0:
+        # More often when the output goes to a file, which the test app reads for its progress bar
+        if len(frames) % (500 if sys.stderr.isatty() else 100) == 0:
             print(f"  read {len(frames)}{f'/{total}' if total else ''} frames", file=sys.stderr)
 
     capture.release()

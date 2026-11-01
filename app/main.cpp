@@ -32,6 +32,7 @@
 #include <dxgi1_6.h>
 #include <shellapi.h>
 #include <shlobj.h>
+#include <commctrl.h>
 #include <windows.h>
 #include <wrl/client.h>
 
@@ -226,7 +227,7 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
     bool toggle_auto = false;  ///< Set when A was pressed.
     latency_test::upload_server_t *upload_server = nullptr;  ///< Latency Cam's upload server, when running.
     std::filesystem::path results_dir;  ///< Where uploads and their results are saved.
-    bool close_prompt_open = false;  ///< Set while asking whether to close during an upload or analysis.
+    bool exit_requested = false;  ///< Set when the app was closed during an upload or analysis, to wait for it.
     latency_test::fps_entry_t fps_entry;  ///< A frame rate being typed after F.
     std::optional<double> new_fps;  ///< A frame rate entered and not applied yet; 0 for the display's refresh rate.
     int width {};  ///< Current back buffer width.
@@ -565,27 +566,14 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
         }
         break;
       case WM_CLOSE:
-        if (app && app->close_prompt_open) {
-          return 0;  // Already asking; Esc pressed again doesn't stack another dialog
+        if (app && app->exit_requested) {
+          return 0;  // Already closing; Esc pressed again changes nothing
         }
-        if (app && app->upload_server) {
-          const std::string busy = app->upload_server->busy_description();
-          if (!busy.empty()) {
-            const std::string text = std::format(
-              "The host {}.\n\n"
-              "If you close now, an upload in progress is lost. An analysis finishes in the background and its report "
-              "is still saved in {}, but Latency Cam on the phone can't fetch the results.\n\n"
-              "Close anyway?",
-              busy,
-              to_utf8(app->results_dir.wstring())
-            );
-            app->close_prompt_open = true;
-            const int answer = MessageBoxW(hwnd, to_utf16(text).c_str(), L"latency-test", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2);
-            app->close_prompt_open = false;
-            if (answer != IDYES) {
-              return 0;
-            }
-          }
+        if (app && app->upload_server && app->upload_server->activity().busy) {
+          // Close the test pattern now; the main loop shows the progress until the upload or analysis is done
+          app->exit_requested = true;
+          ShowWindow(hwnd, SW_HIDE);
+          return 0;
         }
         break;
       case WM_DESTROY:
@@ -1093,6 +1081,156 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
   }
 
   /**
+   * @brief State of the window shown while the app waits to close.
+   */
+  struct wait_window_t {
+    app_t *app = nullptr;  ///< App whose upload server is busy.
+    HWND text {};  ///< What is in progress.
+    HWND progress {};  ///< Progress bar.
+    bool marquee = false;  ///< Whether the bar is in its indeterminate mode.
+    bool done = false;  ///< Set when the window should close.
+  };
+
+  constexpr UINT_PTR wait_timer_id = 1;  ///< Timer refreshing the wait window.
+  constexpr int close_anyway_id = 100;  ///< Command of the Close anyway button.
+
+  /**
+   * @brief Refresh the wait window from the upload server, closing it when nothing is in progress.
+   *
+   * @param hwnd Wait window.
+   * @param state Its state.
+   */
+  void refresh_wait_window(HWND hwnd, wait_window_t &state) {
+    const auto activity = state.app->upload_server->activity();
+    if (!activity.busy) {
+      state.done = true;
+      DestroyWindow(hwnd);
+      return;
+    }
+    SetWindowTextW(state.text, to_utf16(activity.description + "\n\nThis window closes when it's done.").c_str());
+    const bool marquee = activity.percent < 0;
+    if (marquee != state.marquee) {
+      const LONG_PTR style = GetWindowLongPtrW(state.progress, GWL_STYLE);
+      SetWindowLongPtrW(state.progress, GWL_STYLE, marquee ? style | PBS_MARQUEE : style & ~static_cast<LONG_PTR>(PBS_MARQUEE));
+      SendMessageW(state.progress, PBM_SETMARQUEE, marquee, 30);
+      state.marquee = marquee;
+    }
+    if (!marquee) {
+      SendMessageW(state.progress, PBM_SETPOS, activity.percent, 0);
+    }
+  }
+
+  /**
+   * @brief Window procedure of the wait window.
+   *
+   * @param hwnd Window.
+   * @param msg Message.
+   * @param wparam Message parameter.
+   * @param lparam Message parameter.
+   * @return Message result.
+   */
+  LRESULT CALLBACK wait_window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
+    auto *state = reinterpret_cast<wait_window_t *>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    switch (msg) {
+      case WM_TIMER:
+        if (state && !state->done) {
+          refresh_wait_window(hwnd, *state);
+        }
+        return 0;
+      case WM_COMMAND:
+        if (LOWORD(wparam) == close_anyway_id && state) {
+          state->done = true;
+          DestroyWindow(hwnd);
+        }
+        return 0;
+      case WM_CLOSE:
+        // The window's X closes anyway too
+        if (state) {
+          state->done = true;
+        }
+        DestroyWindow(hwnd);
+        return 0;
+      case WM_DESTROY:
+        KillTimer(hwnd, wait_timer_id);
+        return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wparam, lparam);
+  }
+
+  /**
+   * @brief After the test pattern closed during an upload or analysis, show its progress until it finishes or the user
+   * chooses Close anyway.
+   *
+   * @param app App state.
+   */
+  void wait_before_closing(app_t &app) {
+    const INITCOMMONCONTROLSEX controls {sizeof(INITCOMMONCONTROLSEX), ICC_PROGRESS_CLASS};
+    InitCommonControlsEx(&controls);
+
+    const HINSTANCE instance = GetModuleHandleW(nullptr);
+    WNDCLASSEXW window_class {};
+    window_class.cbSize = sizeof(window_class);
+    window_class.lpfnWndProc = wait_window_proc;
+    window_class.hInstance = instance;
+    window_class.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    window_class.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
+    window_class.lpszClassName = L"LatencyTestWait";
+    RegisterClassExW(&window_class);
+
+    // Sizes are given at 96 dpi and scaled to the system's
+    const UINT dpi = GetDpiForSystem();
+    const auto px = [dpi](int value) {
+      return MulDiv(value, static_cast<int>(dpi), 96);
+    };
+    const DWORD style = WS_POPUP | WS_CAPTION | WS_SYSMENU;
+    const DWORD ex_style = WS_EX_TOPMOST | WS_EX_DLGMODALFRAME;
+    RECT rect {0, 0, px(480), px(170)};
+    AdjustWindowRectExForDpi(&rect, style, FALSE, ex_style, dpi);
+    const int width = rect.right - rect.left;
+    const int height = rect.bottom - rect.top;
+    MONITORINFO monitor {};
+    monitor.cbSize = sizeof(monitor);
+    GetMonitorInfoW(MonitorFromWindow(app.hwnd, MONITOR_DEFAULTTOPRIMARY), &monitor);
+    const RECT &work = monitor.rcWork;
+
+    wait_window_t state;
+    state.app = &app;
+    const HWND hwnd = CreateWindowExW(ex_style, window_class.lpszClassName, L"latency-test: finishing up", style, work.left + (work.right - work.left - width) / 2, work.top + (work.bottom - work.top - height) / 2, width, height, nullptr, nullptr, instance, nullptr);
+    if (!hwnd) {
+      return;
+    }
+    SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(&state));
+
+    NONCLIENTMETRICSW metrics {};
+    metrics.cbSize = sizeof(metrics);
+    SystemParametersInfoForDpi(SPI_GETNONCLIENTMETRICS, sizeof(metrics), &metrics, 0, dpi);
+    const HFONT font = CreateFontIndirectW(&metrics.lfMessageFont);
+
+    state.text = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE, px(16), px(14), px(448), px(70), hwnd, nullptr, instance, nullptr);
+    state.progress = CreateWindowExW(0, PROGRESS_CLASSW, nullptr, WS_CHILD | WS_VISIBLE, px(16), px(90), px(448), px(18), hwnd, nullptr, instance, nullptr);
+    const HWND button = CreateWindowExW(0, L"BUTTON", L"Close anyway", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, px(464 - 130), px(124), px(130), px(32), hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(close_anyway_id)), instance, nullptr);
+    for (const HWND child : {state.text, button}) {
+      SendMessageW(child, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+    }
+    SendMessageW(state.progress, PBM_SETRANGE32, 0, 100);
+
+    refresh_wait_window(hwnd, state);
+    if (!state.done) {
+      ShowWindow(hwnd, SW_SHOW);
+      SetForegroundWindow(hwnd);
+      SetTimer(hwnd, wait_timer_id, 250, nullptr);
+      MSG msg;
+      while (!state.done && GetMessageW(&msg, nullptr, 0, 0) > 0) {
+        if (!IsDialogMessageW(hwnd, &msg)) {
+          TranslateMessage(&msg);
+          DispatchMessageW(&msg);
+        }
+      }
+    }
+    DeleteObject(font);
+  }
+
+  /**
    * @brief Run the test app.
    *
    * @param options Command line options.
@@ -1224,6 +1362,12 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
       }
       if (!app.running) {
         break;
+      }
+      if (app.exit_requested) {
+        // Closed during an upload or analysis: the pattern is hidden; wait for it (or Close anyway), then quit
+        wait_before_closing(app);
+        DestroyWindow(app.hwnd);
+        continue;
       }
 
       if (app.resize_pending) {
