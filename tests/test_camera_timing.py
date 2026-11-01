@@ -115,7 +115,7 @@ class ClockFitTest(unittest.TestCase):
 
 class HostLogTest(unittest.TestCase):
     def test_reads_both_logs(self):
-        header = "# sunshine latency-test\n# start_qpc=100 qpc_frequency=10000000\n"
+        header = "# latency-test\n# start_qpc=100 qpc_frequency=10000000\n"
         with tempfile.TemporaryDirectory() as d:
             (Path(d) / "run.csv").write_text(header + "seq,source,detail,input_us,render_us,present_call_us,present_return_us,frame,still_queued\n"
                                              "1,a,0,10.0,11.0,12.0,13.0,5,0\n")

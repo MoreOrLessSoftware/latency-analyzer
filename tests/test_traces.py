@@ -155,15 +155,16 @@ class TracesTest(unittest.TestCase):
         pipeline = traces.analyse(traces.join(frames, START_US, None, moonlight), len(frames), None, "m.csv")
         self.assertTrue(any("a frame off" in note for note in pipeline.notes))
 
-    def test_report_shows_moonlights_capture_to_present(self):
-        # The report's headline tiles with every stage present, Moonlight's capture to present included
+    @staticmethod
+    def write_report(with_traces):
+        """The report for make_run's frames, with or without the traces; returns its HTML and its folder."""
         import types
 
         from camera_timing import pacing_stats
         from report import write_camera_report
 
         frames, sunshine, moonlight = make_run()
-        pipeline = traces.analyse(traces.join(frames, START_US, sunshine, moonlight), len(frames), "s.csv", "m.csv")
+        pipeline = traces.analyse(traces.join(frames, START_US, sunshine, moonlight), len(frames), "s.csv", "m.csv") if with_traces else None
         fit = types.SimpleNamespace(windows=10, samples=100, min_rtt_ms=2.0, median_rtt_ms=4.0, residual_ms=0.1, drift_ppm=20.0)
         info = {"video": "run.mp4", "frames": 100, "fps": 240.0, "stream": (2560, 1440), "stream_fps": 97.0, "found": 100,
                 "estimated": 0, "fit": fit, "flips_seen": 0, "flips_logged": 0, "device": "Test", "edge_difference": 0.0,
@@ -175,10 +176,23 @@ class TracesTest(unittest.TestCase):
             path = Path(d) / "run.report.html"
             write_camera_report(path, info, [], frame_rows, pacing, [],
                                 {"flips": Path(d) / "a.csv", "frames": Path(d) / "b.csv", "regions": Path(d) / "c.png"})
-            html = path.read_text(encoding="utf-8")
+            return path.read_text(encoding="utf-8"), d
+
+    def test_report_shows_moonlights_capture_to_present(self):
+        # The report's headline tiles with every stage present, Moonlight's capture to present included
+        html, _ = self.write_report(True)
         self.assertIn("Capture &rarr; client present (Moonlight&#39;s capture to present)", html)
         self.assertIn("11.00 <small>ms</small>", html)
         self.assertIn("Client present &rarr; photon, to white / black", html)
+        self.assertIn("Moonlight&#39;s &ldquo;capture to present&rdquo; is the middle of that", html)
+
+    def test_report_without_traces_names_no_client_or_folder(self):
+        # Most hosts and clients write no traces: nothing about Moonlight, and only file names, as reports get shared
+        html, folder = self.write_report(False)
+        self.assertNotIn("Moonlight", html)
+        self.assertNotIn("Pipeline", html)
+        self.assertNotIn(str(Path(folder)), html)
+        self.assertIn("Files: a.csv, b.csv, c.png</p>", html)
 
     def test_unknown_values_are_left_out(self):
         self.assertIsNone(traces.number({"x": "-1"}, "x"))

@@ -8,8 +8,11 @@ new frame reaching the client's screen, for:
 - **host present → photon:** the time from the game handing its frame to Windows on the host to the client display
   showing it, for every flip and every frame
 - **pacing:** how evenly the client showed the host's frames, which shows whether VRR pacing is working
-- with Sunshine's frame log and Moonlight's pacing trace, the **stages in between**, including Moonlight's own
-  "capture to present"
+
+It works with any streaming host that runs on Windows (Sunshine, for example) and any client: it only needs the
+test app on the host and the camera on the client's display, and nothing from the streaming software itself.
+Builds of the host and client that log every frame can optionally break the result
+[down by stage](#optional-breaking-it-down-by-stage).
 
 | File | What it is |
 |---|---|
@@ -25,10 +28,9 @@ new frame reaching the client's screen, for:
 
 ## What you need
 
-- A Sunshine host with `latency-test.exe` and `latency-analyzer.exe` (see [Build](#build) and
+- A Windows streaming host with `latency-test.exe` and `latency-analyzer.exe` (see [Build](#build) and
   [Deploy to a host](#deploy-to-a-host)).
-- A Moonlight client. For the [stage breakdown](#breaking-it-down-with-sunshines-and-moonlights-logs), Sunshine
-  writing its `sunshine-frames-*.csv` and Moonlight its pacing trace (`ML_PACING_TRACE`).
+- A client streaming from it, with its display where the phone can film it.
 - An Android phone that films 1920x1080 at 240 fps through the camera API, with Latency Cam installed. The Pixel 10 Pro
   qualifies; [android/README.md](android/README.md) says how to check others.
 
@@ -73,7 +75,8 @@ system's Python packages alone. It isn't part of the default build because it ta
    ```
    netsh advfirewall firewall add rule name="latency-test" dir=in action=allow program="C:\Tools\latency-test\latency-test.exe" enable=yes
    ```
-3. In Sunshine, add an app whose command is the full path to `latency-test.exe`.
+3. In the streaming host, add an app whose command is the full path to `latency-test.exe` (in Sunshine: Applications,
+   Add New, Command), or start it on the host's desktop and stream the desktop.
 
 Results go to `results` in that folder, so keep it somewhere the streaming user can write to (not Program Files), or
 pass `--results`.
@@ -88,7 +91,7 @@ pass `--results`.
 | `--noise <0..1>` | Background noise amplitude, default 0.5. The noise keeps the encoder near its bitrate; 0 turns it off. |
 | `--no-noise` | Flat gray background, so frames stay small (same as `--noise 0`). |
 | `--fps <n>` | Background update rate. The default is the display's refresh rate. **F** changes it while running. |
-| `--log <path>` | CSV log of each flip, timed with the host's QPC. The default is `%TEMP%\sunshine_latency_test.csv`. Every frame's render and present times go to the same name ending `.frames.csv`. |
+| `--log <path>` | CSV log of each flip, timed with the host's QPC. The default is `%TEMP%\latency_test.csv`. Every frame's render and present times go to the same name ending `.frames.csv`. |
 | `--no-auto` | Starts without automatic flips. By default the trigger flips on its own every 150–400 ms, at random, as well as on key presses; automatic flips land on the next scheduled frame, so the frame rate stays steady. **A** toggles them while running. |
 | `--auto-interval <min>-<max>` | The interval range for automatic flips in ms, for example `100-300`. |
 | `--time-port <n>` | Port answering Latency Cam, default 48100: clock sync over UDP and uploads over TCP. |
@@ -112,7 +115,7 @@ By default the app presents without v-sync, with tearing. It redraws the backgro
 display's refresh rate without it. A key press is answered straight away with an extra frame; automatic flips are
 shown on the next scheduled frame instead, which keeps the cadence steady for measuring pacing.
 
-Keys, on the host or through Moonlight; none of them counts as a flip, and each change is noted in both logs
+Keys, on the host or through the stream; none of them counts as a flip, and each change is noted in both logs
 (`# auto=`, `# vsync=`, `# fps=`):
 
 | Key | Does |
@@ -137,16 +140,16 @@ host's logs and everything the analysis wrote: `NAME.report.html`, `NAME.summary
 Tips:
 
 - Hold the phone steady or use a stand. Handheld works too, because every frame is re-aligned on the bullseyes.
-- Moonlight's stats overlay (Ctrl+Alt+Shift+S) can stay on. It hides the top left bullseye, and the analyzer
-  estimates that corner from the other three.
+- A client's statistics overlay can stay on, such as Moonlight's (Ctrl+Alt+Shift+S). If it hides a bullseye, the
+  analyzer estimates that corner from the other three.
 - Avoid glare on the display, and fill as much of the shot with it as you can: the frame number patches are small.
 - Keep `latency-test.exe` running until the upload and analysis are done. It starts its logs afresh each time it
   runs, so a recording uploaded after a restart has nothing to match; the analysis says so.
 
 ### Analyse again
 
-To analyse an uploaded recording again, for example after adding Sunshine's and Moonlight's logs to its folder, give
-the analyzer just its results folder:
+To analyse an uploaded recording again, for example after adding [stage logs](#optional-breaking-it-down-by-stage) to
+its folder, give the analyzer just its results folder:
 
 ```
 latency-analyzer.exe results\NAME
@@ -161,11 +164,11 @@ test app's log and its frame rate from what the test app presented while filming
 folder.
 
 A recording made elsewhere works the same way: put `NAME.mp4` and `NAME.camera.json` in one folder and pass the host
-log from the run (by default the `NAME.host.csv` next to the video, else `%TEMP%\sunshine_latency_test.csv`, with its
+log from the run (by default the `NAME.host.csv` next to the video, else `%TEMP%\latency_test.csv`, with its
 `.frames.csv` next to it):
 
 ```
-python analyzer/analyze_video.py NAME.mp4 --host-log sunshine_latency_test.csv --report
+python analyzer/analyze_video.py NAME.mp4 --host-log latency_test.csv --report
 ```
 
 | Option | Meaning |
@@ -174,7 +177,7 @@ python analyzer/analyze_video.py NAME.mp4 --host-log sunshine_latency_test.csv -
 | `--stream-fps N` | Stream frame rate, for frame gridlines. The default is the rate the test app presented at while filming. |
 | `--host-log PATH` | latency-test.exe's log from the filmed run. |
 | `--camera-timing PATH` | Latency Cam's timing file, if not `NAME.camera.json` next to the video. |
-| `--sunshine-frames PATH`, `--moonlight-trace PATH` | Sunshine's and Moonlight's logs, if not in the video's folder. |
+| `--sunshine-frames PATH`, `--moonlight-trace PATH` | [Stage logs](#optional-breaking-it-down-by-stage), if not in the video's folder. |
 | `--report` | Also write the HTML report (always, for a results folder). |
 | `--out DIR` | Output folder. The default is the video's folder. |
 | `--max-frames N` | Analyse only the start of the video. |
@@ -184,13 +187,13 @@ python analyzer/analyze_video.py NAME.mp4 --host-log sunshine_latency_test.csv -
 "Present" alone is ambiguous here, so the analysis never uses it:
 
 - **host present**: the game (the test app) handing its frame to Windows on the host.
-- **client present**: Moonlight handing the decoded frame to Windows on the client. Moonlight's statistic **capture
-  to present** runs from capture to this point, before the client display has shown anything.
+- **client present**: the client handing the decoded frame to Windows on the client, before its display has shown
+  anything. A client's own latency statistics usually end here.
+- **photon**: the client display showing it, which is what the camera sees.
 
 ```
-host present ─▶ capture ─────────────▶ client present ─────────▶ photon
-     │◀────▶│◀─ Moonlight: capture to present ─▶│◀──────────▶│
-     │◀──────────── camera: host present → photon ───────────▶│
+host present ─▶ capture ─▶ encode ─▶ network ─▶ decode ─▶ client present ─▶ photon
+     │◀─────────────────── camera: host present → photon ─────────────────▶│
 ```
 
 - **Host present → photon, flips:** from the test app handing the flip to Windows on the host, to the trigger
@@ -208,11 +211,19 @@ host present ─▶ capture ─────────────▶ client pr
   scan to come round, and the result depends on where in the scan the app's timer happens to land. Run a little under
   it (F, then 97 at 100 Hz) to measure with VRR in play.
 
-### Breaking it down with Sunshine's and Moonlight's logs
+### Optional: breaking it down by stage
 
-Put Sunshine's `sunshine-frames-*.csv` and Moonlight's `Moonlight-pacing-*.csv` from the filmed run in the recording's
-folder (or pass `--sunshine-frames` and `--moonlight-trace`), and the analysis follows every frame the camera timed
-through them. The report and summary get a **Pipeline** section with each stage's time:
+The camera measures the whole path. To see where the time goes, the analysis can follow every frame it timed through
+per-frame logs from the host and the client. Released versions of Sunshine and Moonlight don't write these yet: they
+need builds that do, writing:
+
+- **host:** Sunshine's frame log, `sunshine-frames-*.csv`, with each frame's capture, encode and send times on the
+  host's QueryPerformanceCounter
+- **client:** Moonlight's pacing trace, `Moonlight-pacing-*.csv` (with `ML_PACING_TRACE` set), with each frame's
+  packet, decode and present times and, in the `capture_to_present_us` column, Moonlight's own capture to present
+
+Put either or both from the filmed run in the recording's folder (or pass `--sunshine-frames` and `--moonlight-trace`)
+and analyse it again. The report and summary get a **Pipeline** section with each stage's time:
 
 | Stage | From |
 |---|---|
@@ -224,8 +235,8 @@ through them. The report and summary get a **Pipeline** section with each stage'
 | client present → photon | the camera's capture → photon less Moonlight's capture to present: the client display's own part |
 | capture → photon, host present → photon | the camera (and Sunshine) |
 
-Moonlight's capture to present, and so the rows built on it, need a Moonlight build whose pacing trace has the
-`capture_to_present_us` column. With it, the headline also shows **capture → client present** and **client present
+The rows built on Moonlight's capture to present need the `capture_to_present_us` column. With it, the headline
+also shows **capture → client present** and **client present
 → photon** next to **capture → photon**, and the three add up frame by frame.
 
 The client's clock is offset from the host's by an unknown amount, so no stage spans both except through Moonlight's

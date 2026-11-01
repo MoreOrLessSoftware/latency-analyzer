@@ -78,7 +78,7 @@ def make_recording(out_dir, seconds=3.0, stream=(1280, 720), host_fps=120.0, cam
     truth = (latency + tau_ms / 1000 * np.log(2)) * 1000
     truth_fall = (latency + tau_fall_ms / 1000 * np.log(2)) * 1000
 
-    header = (f"# sunshine latency-test\n# start_utc=2026-11-01T00:00:00.000Z start_filetime=0 start_qpc={START_QPC} "
+    header = (f"# latency-test\n# start_utc=2026-11-01T00:00:00.000Z start_filetime=0 start_qpc={START_QPC} "
               f"qpc_frequency={QPC_FREQUENCY}\n# width={width} height={height} refresh_hz=120 fps={host_fps} vsync=false "
               "tearing=true noise=0\n# auto=true auto_min_ms=150 auto_max_ms=400 time_server=port 48100\n"
               "# Times are microseconds of QueryPerformanceCounter since start_qpc.\n")

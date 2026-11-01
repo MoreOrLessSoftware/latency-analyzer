@@ -352,7 +352,6 @@ def write_camera_report(path, info, flips, frames, pacing, notes, files):
     out.append(stats_row("client minus host interval", pacing.mismatch_ms))
     out.append("</tbody></table></div>")
 
-    pipeline = info.get("pipeline")
     if pipeline and pipeline.stages:
         logs = [name for name in (pipeline.sunshine_file, pipeline.moonlight_file) if name]
         out.append("<h2>Pipeline, from " + ("Sunshine&#39;s and Moonlight&#39;s traces" if len(logs) == 2 else
@@ -400,17 +399,19 @@ def write_camera_report(path, info, flips, frames, pacing, notes, files):
                    f'{pacing.mismatch_ms.size} consecutive pairs'),
     ]
     out.append('<div class="card"><dl>' + "".join(f"<dt>{k}</dt><dd>{v}</dd>" for k, v in rows) + "</dl></div>")
-    out.append('<p class="legend">Host present &rarr; photon runs from the game (the test app) handing its frame to Windows on '
-               'the host to the client display showing the change: the capture wait, encoding, the network, decoding, the '
-               'client&#39;s pacing and the client display&#39;s own delay. Moonlight&#39;s &ldquo;capture to present&rdquo; '
-               'is the middle of that, from capture to Moonlight handing the frame to Windows on the client (the client '
-               'present).</p>')
+    legend = ('Host present &rarr; photon runs from the game (the test app) handing its frame to Windows on the host '
+              'to the client display showing the change: the capture wait, encoding, the network, decoding, the '
+              'client&#39;s pacing and the client display&#39;s own delay.')
+    if pipeline and pipeline.moonlight_file:
+        legend += (' Moonlight&#39;s &ldquo;capture to present&rdquo; is the middle of that, from capture to Moonlight '
+                   'handing the frame to Windows on the client (the client present).')
+    out.append(f'<p class="legend">{legend}</p>')
 
     regions = embed_image(files["regions"], max_width=1600, jpeg=True)
     if regions:
         out.append('<h2>Sampled regions</h2><div class="card"><p class="legend">Check that the boxes sit on the trigger and the frame number patches.</p>'
                    f'<img src="{regions}" alt="Camera frame with the sampled regions outlined"></div>')
     out.append(f'<p class="files">Files: {esc(Path(files["flips"]).name)}, {esc(Path(files["frames"]).name)}, '
-               f'{esc(Path(files["regions"]).name)} in {esc(str(Path(files["flips"]).parent))}</p>')
+               f'{esc(Path(files["regions"]).name)}</p>')
     out.append(f'<div id="tip"></div></main><script>{SCRIPT}</script></body></html>')
     Path(path).write_text("\n".join(out), encoding="utf-8")

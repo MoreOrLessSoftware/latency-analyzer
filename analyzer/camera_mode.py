@@ -30,7 +30,7 @@ from report import write_camera_report
 
 
 def default_host_log():
-    return Path(os.environ.get("TEMP", ".")) / "sunshine_latency_test.csv"
+    return Path(os.environ.get("TEMP", ".")) / "latency_test.csv"
 
 
 def camera_row(transform, canvas, rect):

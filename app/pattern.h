@@ -241,7 +241,7 @@ namespace latency_test {
     "                   to its bitrate (same as --noise 0).\n"
     "  --fps <n>        Background update rate (default: display refresh rate).\n"
     "  --log <path>     CSV log of inputs and the frames that answered them\n"
-    "                   (default: %TEMP%\\sunshine_latency_test.csv). Every frame's\n"
+    "                   (default: %TEMP%\\latency_test.csv). Every frame's\n"
     "                   present time goes to the same name ending .frames.csv.\n"
     "  --no-auto        Start without automatic flips. By default the trigger flips on\n"
     "                   its own every 150 to 400 ms, at random, on the next scheduled\n"

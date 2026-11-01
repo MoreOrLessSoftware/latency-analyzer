@@ -2,13 +2,13 @@
  * @file app/main.cpp
  * @brief Host side test app for measuring input to photon latency with a camera.
  *
- * Run it as a Sunshine app and stream it to the client under test. It draws the test pattern described in
+ * Run it as an app on the streaming host (Sunshine, for example) and stream it to the client under test. It draws the test pattern described in
  * pattern.h and answers every key press (Esc quits) or mouse button press by presenting a frame with the trigger patch flipped,
  * as soon as the input arrives: it does not wait for the next background frame or, unless --vsync is passed, for
  * vertical blank. With --auto it also flips the trigger on its own at random intervals, on the next scheduled frame
  * rather than with an extra one, so the frame cadence stays steady. Each input and the frame
  * that answered it are logged to a CSV file with QueryPerformanceCounter timestamps, and every frame's present time to
- * a second CSV, so host side delays can be lined up with Sunshine and client logs.
+ * a second CSV, so host side delays can be lined up with the streaming host's and client's logs.
  *
  * A UDP time server answers Latency Cam's clock sync requests (see clock_sync.h) with QueryPerformanceCounter values,
  * so what the camera films can be timed on the same clock as the logs.
@@ -559,7 +559,7 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
         }
         return 0;
       case WM_SETCURSOR:
-        // Hide the cursor so Sunshine does not draw it over the pattern.
+        // Hide the cursor so the streaming host does not draw it over the pattern.
         if (LOWORD(lparam) == HTCLIENT) {
           SetCursor(nullptr);
           return TRUE;
@@ -920,7 +920,7 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
     if (path.empty()) {
       wchar_t temp[MAX_PATH + 1] {};
       GetTempPathW(MAX_PATH + 1, temp);
-      path = to_utf8(temp) + "sunshine_latency_test.csv";
+      path = to_utf8(temp) + "latency_test.csv";
     }
     app.log_path = path;
     app.log = _wfopen(to_utf16(path).c_str(), L"w");
@@ -933,7 +933,7 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
     const auto start_ticks = (static_cast<std::uint64_t>(file_time.dwHighDateTime) << 32) | file_time.dwLowDateTime;
 
     const std::string header = std::format(
-      "# sunshine latency-test\n"
+      "# latency-test\n"
       "# start_utc={:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z start_filetime={} start_qpc={} qpc_frequency={}\n"
       "# width={} height={} refresh_hz={} fps={} vsync={} tearing={} noise={}\n"
       "# auto={} auto_min_ms={} auto_max_ms={} time_server={}\n"
@@ -1251,7 +1251,7 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
     window_class.lpfnWndProc = window_proc;
     window_class.hInstance = instance;
     window_class.hCursor = LoadCursor(nullptr, IDC_ARROW);
-    window_class.lpszClassName = L"SunshineLatencyTest";
+    window_class.lpszClassName = L"LatencyTest";
     RegisterClassExW(&window_class);
 
     DWORD style;
@@ -1271,7 +1271,7 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
       rect = info.rcMonitor;
     }
 
-    app.hwnd = CreateWindowExW(0, window_class.lpszClassName, L"Sunshine Latency Test", style, rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top, nullptr, nullptr, instance, nullptr);
+    app.hwnd = CreateWindowExW(0, window_class.lpszClassName, L"Latency Test", style, rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top, nullptr, nullptr, instance, nullptr);
     if (!app.hwnd) {
       return fail("CreateWindowExW", HRESULT_FROM_WIN32(GetLastError()));
     }
