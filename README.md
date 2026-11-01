@@ -1,7 +1,15 @@
 # ml-latency-analyzer
 
-Measures a stream's latency from a key press with a phone camera. The test needs no clock sync and no footage of a
-finger pressing a key, because both events it times appear on the same screen:
+Measures a stream's latency with a camera pointed at the client display. There are two ways:
+
+- **[Latency Cam](#latency-cam-present-to-photon-and-pacing)** (recommended): an Android app films at 240 fps with every
+  frame timed on the host's clock. It measures the time from the host presenting each frame to it reaching the client
+  display, and how evenly the client shows the host's frames, with no client changes.
+- **Moonlight's latency marker**, filmed with any slow motion camera, described below. It measures from the client
+  drawing its marker, so the client's own frame pacing is part of every sample.
+
+The marker test needs no clock sync and no footage of a finger pressing a key, because both events it times appear on
+the same screen:
 
 - **Marker:** Moonlight's latency marker is a square drawn by the client. It flips between black and white when the
   client sends a key or mouse press, and reaches the screen with the next frame the client draws.
@@ -26,8 +34,54 @@ the key press to the trigger being presented.
 | `analyzer/analyze.bat` | Drag and drop wrapper for Windows |
 | `tests/test_pattern.cpp` | Unit tests for the test pattern layout and options |
 | `tests/test_analyzer.py` | Unit tests for the analyzer and report helpers |
+| `analyzer/camera_mode.py`, `analyzer/camera_timing.py` | Analysis of Latency Cam videos |
+| `tests/test_camera_timing.py`, `tests/synthetic_camera.py` | Tests for it, including an end to end run on a synthetic recording with known latencies |
 | `analyzer/time_server.py` | Stand-alone version of the app's clock sync server, for testing Latency Cam without the app |
 | `android/` | Latency Cam, an Android app that records 240 fps video with every frame timed on the host's clock (see [android/README.md](android/README.md)) |
+
+## Latency Cam: present to photon and pacing
+
+1. **Host:** stream `latency-test.exe --auto`. The trigger then flips on its own, and the app answers Latency Cam's
+   clock sync on UDP port 48100 (allow it through the firewall when asked).
+2. **Phone:** open Latency Cam ([android/README.md](android/README.md)) on the same network. Wait for the sync line to
+   turn green, frame the whole client display, enter a test name and record for 10–30 s. Copy
+   `NAME.mp4` and `NAME.camera.json` from `Download/LatencyCam` on the phone into one folder.
+3. **Analyse**, with the host log from the run (by default `%TEMP%\sunshine_latency_test.csv` on the host, with its
+   `.frames.csv` next to it):
+
+   ```
+   python analyzer/analyze_video.py NAME.mp4 --stream 3840x2160 --stream-fps 117 --host-log sunshine_latency_test.csv --report
+   ```
+
+   The analyzer switches to this mode when `NAME.camera.json` sits next to the video.
+
+It reports:
+
+- **Present to photon, flips:** from the host's present call to the trigger crossing halfway on the client display,
+  for every flip.
+- **Present to photon, every frame:** the same for every host frame, timed by the frame number patch above the
+  trigger that changes with it. Only one patch changes per frame, because the number is Gray coded.
+- **Pacing:** for each pair of consecutive frames, the client's display interval minus the host's present interval.
+  With VRR pacing working, these pile up at 0; at a fixed refresh rate they spread by the refresh interval.
+  **Uneven** counts the pairs off by more than a quarter of a frame, and **frames not seen** the host frames that
+  never showed (or whose patches couldn't be read).
+
+Writes `NAME.flips.csv`, `NAME.frames.csv`, `NAME.regions.png` and, with `--report`, `NAME.report.html`.
+
+Present to photon includes everything after the present call: the capture wait, encoding, the network, decoding, the
+client's pacing and the display's own delay.
+
+### Accuracy
+
+- **Clock sync:** the phone assumes its requests and the replies take equally long. A one-sided delay shifts every
+  time by up to half the fastest round trip, the same way for all of them; the report notes round trips over 3 ms.
+  The scatter around the fit shows the noise.
+- **Camera:** each row's time comes from the frame's sensor timestamp, the rolling shutter skew and the crop, at the
+  middle of the exposure. On a synthetic recording with a realistic display edge (time constant 4 ms) and a 4 ms
+  exposure, results read 0.4 ms late with 0.13 ms spread: averaging over the exposure and interpolating between
+  camera frames 4.2 ms apart both lag a curved edge slightly.
+- **Rolling shutter direction:** the analyzer assumes the sensor reads the video's rows top to bottom as stored. Film
+  the host's own monitor once to check: its flips should land a few ms after the host's present times.
 
 ## What you need
 

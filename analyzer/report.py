@@ -226,6 +226,7 @@ svg .tick.frame { fill: var(--muted); }
 svg .dot { fill: var(--series); }
 svg .dot.hollow { fill: var(--surface); stroke: var(--series); stroke-width: 2; }
 svg .hit:hover .dot { stroke: var(--text); stroke-width: 2; }
+svg .dots circle { fill: var(--series); fill-opacity: 0.6; }
 svg .seg.client { fill: var(--series-2); }
 svg .seg.stream { fill: var(--series); }
 svg .seg.stream.hollow { fill: var(--surface); stroke: var(--series); stroke-width: 2; }
@@ -396,5 +397,174 @@ def write_report(path, info, presses, notes, files):
 
     out.append(f'<p class="files">Files: {esc(Path(files["csv"]).name)}, {esc(Path(files["trace"]).name)}, {esc(Path(files["regions"]).name)} '
                f'in {esc(str(Path(files["csv"]).parent))}</p>')
+    out.append(f'<div id="tip"></div></main><script>{SCRIPT}</script></body></html>')
+    Path(path).write_text("\n".join(out), encoding="utf-8")
+
+
+def time_scatter(points, max_points=4000):
+    """An SVG of (seconds, ms) points: each frame's present to photon time over the recording."""
+    width, height = 760, 260
+    left, right, top, bottom = 44, 20, 14, 34
+    if len(points) > max_points:
+        points = points[:: int(np.ceil(len(points) / max_points))]
+    xs = np.array([p[0] for p in points])
+    ys = np.array([p[1] for p in points])
+    span = max(float(xs.max() - xs.min()), 1e-3) if xs.size else 1.0
+    x0 = float(xs.min()) if xs.size else 0.0
+    highest = float(np.percentile(ys, 99.5)) if ys.size else 1.0
+    step = nice_step(max(highest, 1.0))
+    top_value = step * (int(max(highest, 1.0) / step) + 1)
+    x_of = lambda t: left + (t - x0) / span * (width - left - right)
+    y_of = lambda v: top + (1 - min(v, top_value) / top_value) * (height - top - bottom)
+
+    parts = [f'<svg class="chart" viewBox="0 0 {width} {height}" role="img" aria-label="Present to photon of every frame over time">']
+    k = 0
+    while k * step <= top_value + 1e-6:
+        y = y_of(k * step)
+        parts.append(f'<line class="grid" x1="{left}" x2="{width - right}" y1="{y:.1f}" y2="{y:.1f}"/>')
+        parts.append(f'<text class="tick" x="{left - 6}" y="{y + 4:.1f}" text-anchor="end">{k * step:g}</text>')
+        k += 1
+    second_step = nice_step(span, 10)
+    s = 0.0
+    while s <= span + 1e-9:
+        parts.append(f'<text class="tick" x="{x_of(x0 + s):.1f}" y="{height - bottom + 16}" text-anchor="middle">{s:g}</text>')
+        s += second_step
+    parts.append(f'<text class="tick" x="{width - right}" y="{height - 4}" text-anchor="end">seconds</text>')
+    parts.append(f'<line class="axis" x1="{left}" x2="{width - right}" y1="{y_of(0):.1f}" y2="{y_of(0):.1f}"/>')
+    parts.append('<g class="dots">' + "".join(f'<circle cx="{x_of(t):.1f}" cy="{y_of(v):.1f}" r="1.6"/>' for t, v in zip(xs, ys)) + "</g>")
+    if ys.size:
+        y = y_of(float(np.median(ys)))
+        parts.append(f'<line class="median" x1="{left}" x2="{width - right}" y1="{y:.1f}" y2="{y:.1f}"/>')
+    parts.append("</svg>")
+    return "".join(parts)
+
+
+def histogram(values, bin_ms=0.5, label="ms"):
+    """An SVG histogram of values in ms, centred on zero, with a tooltip per bar."""
+    width, height = 760, 220
+    left, right, top, bottom = 44, 20, 14, 34
+    values = np.asarray(values)
+    reach = max(5.0, float(np.percentile(np.abs(values), 99.5)) if values.size else 5.0)
+    reach = bin_ms * np.ceil(reach / bin_ms)
+    edges = np.arange(-reach, reach + bin_ms / 2, bin_ms)
+    counts, _ = np.histogram(np.clip(values, -reach, reach - 1e-9), edges)
+    highest = max(int(counts.max()) if counts.size else 1, 1)
+    x_of = lambda v: left + (v + reach) / (2 * reach) * (width - left - right)
+    y_of = lambda c: top + (1 - c / highest) * (height - top - bottom)
+    parts = [f'<svg class="chart" viewBox="0 0 {width} {height}" role="img" aria-label="Histogram">']
+    step = nice_step(reach, 5)
+    v = -step * np.floor(reach / step)
+    while v <= reach + 1e-9:
+        x = x_of(v)
+        parts.append(f'<line class="grid" x1="{x:.1f}" x2="{x:.1f}" y1="{top}" y2="{height - bottom}"/>')
+        parts.append(f'<text class="tick" x="{x:.1f}" y="{height - bottom + 16}" text-anchor="middle">{v:+g}</text>')
+        v += step
+    parts.append(f'<text class="tick" x="{width - right}" y="{height - 4}" text-anchor="end">{html.escape(label)}</text>')
+    bar = (width - left - right) / len(counts)
+    total = max(values.size, 1)
+    for i, c in enumerate(counts):
+        if c == 0:
+            continue
+        x = left + i * bar
+        y = y_of(c)
+        tip = f"{edges[i]:+.1f} to {edges[i + 1]:+.1f} ms: {c} ({c / total:.1%})"
+        parts.append(f'<g class="hit" data-tip="{html.escape(tip)}"><rect class="seg stream" x="{x + 0.5:.1f}" y="{y:.1f}" '
+                     f'width="{max(bar - 1, 1):.1f}" height="{y_of(0) - y:.1f}"/></g>')
+    parts.append(f'<line class="axis" x1="{left}" x2="{width - right}" y1="{y_of(0):.1f}" y2="{y_of(0):.1f}"/>')
+    parts.append("</svg>")
+    return "".join(parts)
+
+
+def write_camera_report(path, info, flips, frames, pacing, notes, files):
+    """
+    Write the report for a Latency Cam video.
+
+    info: video, frames, fps, stream, stream_fps, found, estimated, fit (ClockFit), flips_seen, flips_logged, device.
+    flips: dicts with seq, source, latency, rising, edge_ms. frames: dicts with frame, photon_s, latency.
+    pacing: camera_timing.Pacing. notes: plain text. files: dict with the flips, frames and regions paths.
+    """
+    esc = html.escape
+    stream_fps = info.get("stream_fps")
+    fit = info["fit"]
+    flip_latencies = [f["latency"] for f in flips]
+    frame_latencies = [f["latency"] for f in frames]
+    out = [f'<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">'
+           f'<title>Latency {esc(Path(info["video"]).stem)}</title><style>{STYLE}</style></head><body><main>']
+    out.append(f'<h1>{esc(Path(info["video"]).name)}</h1>')
+    stream_text = f'{info["stream"][0]}x{info["stream"][1]}' + (f' at {stream_fps:g} fps' if stream_fps else "")
+    out.append(f'<p class="sub">Stream {stream_text} &middot; Latency Cam, {esc(info["device"])}, {info["fps"]:g} fps, '
+               f'{info["frames"] / info["fps"]:.1f} s</p>')
+
+    tiles = []
+    if flip_latencies:
+        tiles.append(("Present to photon, flips, median", f'{np.median(flip_latencies):.2f} <small>ms</small>'))
+    if frame_latencies:
+        tiles.append(("Present to photon, every frame, median", f'{np.median(frame_latencies):.2f} <small>ms</small>'))
+    if pacing.mismatch_ms.size:
+        tiles.append(("Pacing, client &minus; host interval, sd", f'{pacing.mismatch_ms.std():.2f} <small>ms</small>'))
+        tiles.append(("Uneven frame intervals", f'{pacing.uneven / pacing.mismatch_ms.size:.1%} <small>of {pacing.mismatch_ms.size}</small>'))
+    if pacing.frames_presented:
+        tiles.append(("Frames not seen", f'{pacing.not_seen} <small>of {pacing.frames_presented}</small>'))
+    out.append('<div class="tiles">' + "".join(f'<div class="tile"><div class="label">{l}</div><div class="value">{v}</div></div>' for l, v in tiles) + "</div>")
+
+    if notes:
+        out.append("<h2>Notes</h2>")
+        out.extend(f'<div class="note">{esc(n)}</div>' for n in notes)
+
+    if flips:
+        presses = [{"input": i + 1, "latency": f["latency"], "rising": f["rising"]} for i, f in enumerate(flips)]
+        out.append("<h2>Present to photon, every trigger flip, ms</h2>")
+        out.append(f'<div class="card">{dot_plot(presses, stream_fps)}'
+                   '<p class="legend">From the host presenting the flip to the trigger crossing halfway on the client display. '
+                   '<svg width="12" height="12"><circle cx="6" cy="6" r="5" fill="var(--series)"/></svg> turned white &nbsp; '
+                   '<svg width="12" height="12"><circle cx="6" cy="6" r="4" fill="none" stroke="var(--series)" stroke-width="2"/></svg> turned black'
+                   + ("" if stream_fps else " &nbsp; (pass --stream-fps for frame gridlines)") + "</p></div>")
+
+    if frames:
+        zero = frames[0]["photon_s"]
+        out.append("<h2>Present to photon, every frame, ms</h2>")
+        out.append(f'<div class="card">{time_scatter([(f["photon_s"] - zero, f["latency"]) for f in frames])}'
+                   '<p class="legend">Each dot is one host frame, timed by the frame number patch that changed with it. '
+                   'Dashed: median.</p></div>')
+
+    if pacing.mismatch_ms.size:
+        out.append("<h2>Pacing: client interval &minus; host interval, ms</h2>")
+        out.append(f'<div class="card">{histogram(pacing.mismatch_ms, label="client minus host, ms")}'
+                   '<p class="legend">For each pair of consecutive frames, how much longer (right) or shorter (left) the client '
+                   'showed the first than the host took between presenting them. Even pacing piles up at 0; a display at a '
+                   'fixed refresh rate spreads out by its refresh interval.</p></div>')
+
+    out.append("<h2>Statistics</h2>")
+    out.append('<div class="card"><table><thead><tr><th>ms</th><th>n</th><th>median</th><th>mean</th><th>sd</th><th>p10</th><th>p90</th><th>min</th><th>max</th></tr></thead><tbody>')
+    out.append(stats_row("present to photon, flips", flip_latencies))
+    out.append(stats_row("present to photon, flips turning white", [f["latency"] for f in flips if f["rising"]]))
+    out.append(stats_row("present to photon, flips turning black", [f["latency"] for f in flips if not f["rising"]]))
+    out.append(stats_row("present to photon, every frame", frame_latencies))
+    out.append(stats_row("host present interval", pacing.host_intervals_ms))
+    out.append(stats_row("client display interval", pacing.client_intervals_ms))
+    out.append(stats_row("client minus host interval", pacing.mismatch_ms))
+    out.append("</tbody></table></div>")
+
+    out.append("<h2>Measurement</h2>")
+    rows = [
+        ("Video", f'{info["frames"]} frames at {info["fps"]:g} fps, each timed by its sensor timestamp and rolling shutter'),
+        ("Bullseyes", f'found in {info["found"]}/{info["frames"]} frames' + (f', {info["estimated"]} with one hidden and estimated' if info["estimated"] else "")),
+        ("Clock sync", f'{fit.windows} of {fit.samples} exchanges used; fastest round trip {fit.min_rtt_ms:.2f} ms '
+                       f'(median {fit.median_rtt_ms:.2f}); scatter {fit.residual_ms:.3f} ms; phone clock {fit.drift_ppm:+.1f} ppm against the host&#39;s'),
+        ("Flips", f'{info["flips_seen"]} seen, {len(flips)} matched to the host log ({info["flips_logged"]} logged)'),
+        ("Frames", f'{pacing.frames_seen} seen of {pacing.frames_presented} presented while filming; '
+                   f'{pacing.mismatch_ms.size} consecutive pairs'),
+    ]
+    out.append('<div class="card"><dl>' + "".join(f"<dt>{k}</dt><dd>{v}</dd>" for k, v in rows) + "</dl></div>")
+    out.append('<p class="legend">Present to photon runs from the host&#39;s present call to the client display showing the '
+               'change, so it includes the capture wait, encoding, the network, decoding, the client&#39;s pacing and the '
+               'display&#39;s own delay.</p>')
+
+    regions = embed_image(files["regions"], max_width=1600, jpeg=True)
+    if regions:
+        out.append('<h2>Sampled regions</h2><div class="card"><p class="legend">Check that the boxes sit on the trigger and the frame number patches.</p>'
+                   f'<img src="{regions}" alt="Camera frame with the sampled regions outlined"></div>')
+    out.append(f'<p class="files">Files: {esc(Path(files["flips"]).name)}, {esc(Path(files["frames"]).name)}, '
+               f'{esc(Path(files["regions"]).name)} in {esc(str(Path(files["flips"]).parent))}</p>')
     out.append(f'<div id="tip"></div></main><script>{SCRIPT}</script></body></html>')
     Path(path).write_text("\n".join(out), encoding="utf-8")

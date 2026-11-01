@@ -88,6 +88,7 @@ def compute_layout(width, height):
         "trigger": trigger,
         "quiet": quiet,
         "input_bits": [Rect(row_x + i * cell, input_row_y, cell, half) for i in range(4)],
+        "frame_bits": [Rect(row_x + i * half, frame_row_y, half, half) for i in range(8)],
         "fiducials": [
             Rect(grid, grid, cell, cell),
             Rect(right, grid, cell, cell),
@@ -279,7 +280,8 @@ def read_video(path, canvas, layout, max_frames=None):
     """
     Resample every frame onto the canvas. Returns the stack of canvas frames, which frames are valid (false before the
     fiducials were first found), the number of frames where the fiducials were found, how many of those had only three
-    of them in view, and a reference frame with its transform for drawing.
+    of them in view, a reference frame with its transform for drawing, each frame's transform from canvas pixels to
+    full resolution camera pixels (None before the fiducials were first found), and the camera frame size.
     """
     capture = cv2.VideoCapture(str(path))
     if not capture.isOpened():
@@ -288,6 +290,8 @@ def read_video(path, canvas, layout, max_frames=None):
     canvas_fiducials = np.array([canvas.to_canvas(*f.center) for f in layout["fiducials"]], dtype=np.float32)
     frames = []
     valid = []
+    transforms = []
+    size = None
     found = 0
     three = 0
     last_full = None
@@ -300,6 +304,7 @@ def read_video(path, canvas, layout, max_frames=None):
         if not ok:
             break
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        size = gray.shape[1], gray.shape[0]
         small = cv2.resize(gray, (gray.shape[1] // 2, gray.shape[0] // 2), interpolation=cv2.INTER_AREA)
 
         detection = find_fiducials(small)
@@ -315,6 +320,9 @@ def read_video(path, canvas, layout, max_frames=None):
             # Canvas pixel -> half resolution camera pixel. A held transform covers frames where detection fails.
             transform = cv2.getPerspectiveTransform(canvas_fiducials, corners)
 
+        # The same transform, to full resolution camera pixels
+        full = None if transform is None else np.diag([gray.shape[1] / small.shape[1], gray.shape[0] / small.shape[0], 1.0]) @ transform
+        transforms.append(full)
         if transform is None:
             frames.append(np.zeros((canvas.height, canvas.width), dtype=np.uint8))
             valid.append(False)
@@ -341,7 +349,7 @@ def read_video(path, canvas, layout, max_frames=None):
     capture.release()
     if not frames:
         sys.exit("The video has no frames")
-    return np.stack(frames), np.array(valid), found, three, reference
+    return np.stack(frames), np.array(valid), found, three, reference, transforms, size
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -700,9 +708,23 @@ def main():
     parser.add_argument("--marker-log", "--moonlight-log", dest="marker_log", type=Path,
                         help="Moonlight's latency test CSV, a folder of them, or its log, to add the marker's own delay "
                              "and report the time from the key press to the host's answer being presented")
+    parser.add_argument("--camera-timing", type=Path,
+                        help="Latency Cam's timing file (default: VIDEO.camera.json next to the video, when there is one). "
+                             "Times every flip and frame on the host's clock instead of against Moonlight's marker")
+    parser.add_argument("--host-log", type=Path,
+                        help="latency-test.exe's CSV log from the filmed run, for Latency Cam videos "
+                             "(default: sunshine_latency_test.csv in %%TEMP%%)")
     args = parser.parse_args()
     if not args.video.is_file():
         sys.exit(f"No such file: {args.video}")
+    timing_path = args.camera_timing or args.video.with_name(args.video.stem + ".camera.json")
+    if args.camera_timing and not timing_path.is_file():
+        sys.exit(f"No such file: {timing_path}")
+    if timing_path.is_file():
+        import camera_mode
+
+        camera_mode.run(args, timing_path)
+        return
     if args.marker_log and not args.marker_log.exists():
         sys.exit(f"No such file or folder: {args.marker_log}")
 
@@ -720,7 +742,7 @@ def main():
     stem = out_dir / args.video.stem
 
     print(f"Reading {args.video.name} at {fps:g} fps ({fps_source})", file=sys.stderr)
-    stack, valid, found, three, reference = read_video(args.video, canvas, layout, args.max_frames)
+    stack, valid, found, three, reference, _, _ = read_video(args.video, canvas, layout, args.max_frames)
     frames = stack.shape[0]
     if found == 0:
         sys.exit("The corner bullseyes were not found in any frame. Is the whole pattern in shot?")

@@ -3,6 +3,7 @@ package ca.mlsoft.latencycam;
 import android.content.ContentResolver;
 import android.content.ContentValues;
 import android.content.Context;
+import android.graphics.Rect;
 import android.graphics.SurfaceTexture;
 import android.hardware.camera2.CameraAccessException;
 import android.hardware.camera2.CameraCaptureSession;
@@ -69,6 +70,9 @@ final class Recorder {
         void onError(String message);
 
         void onSaved(String name, int frames);
+
+        /** The camera closed without being asked to, e.g. another app took it. */
+        void onClosed(String reason);
     }
 
     private final Context context;
@@ -80,6 +84,7 @@ final class Recorder {
     private final Handler codecHandler;
     private final Executor cameraExecutor;
 
+    private boolean wanted;  // Whether the camera should be open; callbacks arriving after close() are ignored
     private String cameraId;
     private CameraCharacteristics characteristics;
     private CameraDevice device;
@@ -137,6 +142,10 @@ final class Recorder {
      */
     void open(SurfaceTexture texture) {
         cameraHandler.post(() -> {
+            wanted = true;
+            if (device != null) {
+                return;
+            }
             try {
                 openOnCameraThread(texture);
             } catch (CameraAccessException | SecurityException | IOException e) {
@@ -148,6 +157,7 @@ final class Recorder {
     /** Close the camera, finishing a recording first. */
     void close() {
         cameraHandler.post(() -> {
+            wanted = false;
             if (recording) {
                 stopOnCameraThread();
             }
@@ -172,7 +182,8 @@ final class Recorder {
      */
     void startRecording(String fileName) {
         cameraHandler.post(() -> {
-            if (recording || finishing || session == null) {
+            if (recording || finishing || session == null || device == null) {
+                listener.onError("The camera is not ready");
                 return;
             }
             try {
@@ -251,23 +262,43 @@ final class Recorder {
         manager.openCamera(cameraId, cameraExecutor, new CameraDevice.StateCallback() {
             @Override
             public void onOpened(CameraDevice camera) {
+                if (!wanted || device != null) {
+                    camera.close();
+                    return;
+                }
                 device = camera;
                 createSession();
             }
 
             @Override
             public void onDisconnected(CameraDevice camera) {
-                camera.close();
-                device = null;
+                lost(camera, "The camera was taken by another app");
             }
 
             @Override
             public void onError(CameraDevice camera, int error) {
-                camera.close();
-                device = null;
-                listener.onError("Camera error " + error);
+                lost(camera, "Camera error " + error);
             }
         });
+    }
+
+    /**
+     * Drop a camera that closed on its own, finishing any recording, and tell the activity.
+     *
+     * @param camera The camera that closed.
+     * @param reason Why.
+     */
+    private void lost(CameraDevice camera, String reason) {
+        camera.close();
+        if (camera != device) {
+            return;
+        }
+        if (recording) {
+            stopOnCameraThread();
+        }
+        closeSession();
+        device = null;
+        listener.onClosed(reason);
     }
 
     /**
@@ -314,6 +345,11 @@ final class Recorder {
             new CameraCaptureSession.StateCallback() {
                 @Override
                 public void onConfigured(CameraCaptureSession s) {
+                    if (!wanted || device == null || s.getDevice() != device) {
+                        // The camera was closed while the session was being set up
+                        s.close();
+                        return;
+                    }
                     session = (CameraConstrainedHighSpeedCaptureSession) s;
                     try {
                         repeat(false);
@@ -393,11 +429,16 @@ final class Recorder {
             if (timestamp == null) {
                 return;
             }
+            Rect crop = result.get(CaptureResult.SCALER_CROP_REGION);
             long[] row = {
                 timestamp,
                 orZero(result.get(CaptureResult.SENSOR_EXPOSURE_TIME)),
                 orZero(result.get(CaptureResult.SENSOR_ROLLING_SHUTTER_SKEW)),
                 orZero(result.get(CaptureResult.SENSOR_FRAME_DURATION)),
+                crop == null ? -1 : crop.left,
+                crop == null ? -1 : crop.top,
+                crop == null ? -1 : crop.width(),
+                crop == null ? -1 : crop.height(),
             };
             synchronized (captures) {
                 captures.add(row);
@@ -544,7 +585,11 @@ final class Recorder {
         }
         root.put("video_pts_us", pts);
 
-        root.put("capture_fields", new JSONArray(List.of("sensor_timestamp_ns", "exposure_ns", "rolling_shutter_skew_ns", "frame_duration_ns")));
+        Rect active = characteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE);
+        root.put("active_array", active == null ? JSONObject.NULL
+            : new JSONArray().put(active.left).put(active.top).put(active.width()).put(active.height()));
+        root.put("capture_fields", new JSONArray(List.of("sensor_timestamp_ns", "exposure_ns", "rolling_shutter_skew_ns", "frame_duration_ns",
+            "crop_left", "crop_top", "crop_width", "crop_height")));
         JSONArray rows = new JSONArray();
         synchronized (captures) {
             for (long[] row : captures) {

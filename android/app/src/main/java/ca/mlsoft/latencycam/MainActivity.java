@@ -53,6 +53,7 @@ public class MainActivity extends Activity implements Recorder.Listener {
     private WifiManager.WifiLock wifiLock;
     private SharedPreferences prefs;
     private boolean cameraOpen;
+    private boolean resumed;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -231,6 +232,7 @@ public class MainActivity extends Activity implements Recorder.Listener {
     @Override
     protected void onResume() {
         super.onResume();
+        resumed = true;
         hideSystemBars();
         wifiLock.acquire();
         clockSync.start();
@@ -244,6 +246,7 @@ public class MainActivity extends Activity implements Recorder.Listener {
 
     @Override
     protected void onPause() {
+        resumed = false;
         ui.removeCallbacks(statusTick);
         if (cameraOpen) {
             recorder.close();
@@ -274,7 +277,7 @@ public class MainActivity extends Activity implements Recorder.Listener {
     }
 
     private void openCameraIfReady() {
-        if (cameraOpen || !preview.isAvailable() || checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+        if (!resumed || cameraOpen || !preview.isAvailable() || checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             return;
         }
         cameraOpen = true;
@@ -324,6 +327,18 @@ public class MainActivity extends Activity implements Recorder.Listener {
         ui.post(() -> {
             cameraText.setText(message);
             recordButton.setText(recorder.isRecording() ? "Stop" : "Record");
+        });
+    }
+
+    @Override
+    public void onClosed(String reason) {
+        ui.post(() -> {
+            cameraOpen = false;
+            cameraText.setText(reason);
+            recordButton.setEnabled(false);
+            recordButton.setText("Record");
+            // Try again in a moment, in case it was only taken briefly
+            ui.postDelayed(this::openCameraIfReady, 2000);
         });
     }
 
