@@ -52,6 +52,7 @@ public class MainActivity extends Activity implements Recorder.Listener {
     private static final int AMBER = 0xFFFAB219;
     private static final int MUTED = 0xFF8A8984;
     private static final int BLUE = 0xFF2A78D6;
+    private static final int PANE_DP = 320;
 
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final ClockSync clockSync = new ClockSync();
@@ -112,7 +113,7 @@ public class MainActivity extends Activity implements Recorder.Listener {
         root.setBackgroundColor(Color.BLACK);
 
         preview = new TextureView(this);
-        root.addView(preview, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT, Gravity.START));
+        root.addView(preview, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT, Gravity.START | Gravity.CENTER_VERTICAL));
         preview.setSurfaceTextureListener(new TextureView.SurfaceTextureListener() {
             @Override
             public void onSurfaceTextureAvailable(SurfaceTexture texture, int width, int height) {
@@ -141,7 +142,7 @@ public class MainActivity extends Activity implements Recorder.Listener {
         pane.setOrientation(LinearLayout.VERTICAL);
         // Nearly opaque: the 16:9 preview runs under the pane's left edge
         pane.setBackgroundColor(0xF2101010);
-        root.addView(pane, new FrameLayout.LayoutParams(dp(320), ViewGroup.LayoutParams.MATCH_PARENT, Gravity.END));
+        root.addView(pane, new FrameLayout.LayoutParams(dp(PANE_DP), ViewGroup.LayoutParams.MATCH_PARENT, Gravity.END));
 
         LinearLayout tabs = new LinearLayout(this);
         tabs.setOrientation(LinearLayout.HORIZONTAL);
@@ -317,13 +318,21 @@ public class MainActivity extends Activity implements Recorder.Listener {
         return Math.round(value * getResources().getDisplayMetrics().density);
     }
 
-    /** Size the preview to 16:9 at the left of the screen, and rotate the sensor's frames to match the display. */
+    /**
+     * Size the preview to the largest 16:9 area left of the panel, so all of the recorded frame is visible for lining
+     * up the corners, and rotate the sensor's frames to match the display.
+     */
     private void fitPreview() {
         View parent = (View) preview.getParent();
+        int available = parent.getWidth() - dp(PANE_DP);
         int height = parent.getHeight();
-        int width = height * Recorder.WIDTH / Recorder.HEIGHT;
-        if (height == 0) {
+        if (height == 0 || available <= 0) {
             return;
+        }
+        int width = height * Recorder.WIDTH / Recorder.HEIGHT;
+        if (width > available) {
+            width = available;
+            height = width * Recorder.HEIGHT / Recorder.WIDTH;
         }
         ViewGroup.LayoutParams params = preview.getLayoutParams();
         if (params.width != width || params.height != height) {
