@@ -40,6 +40,7 @@
 #include <cstdio>
 #include <deque>
 #include <format>
+#include <optional>
 #include <random>
 #include <thread>
 
@@ -222,7 +223,12 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
     bool running = true;  ///< Cleared when the window closes.
     bool resize_pending = false;  ///< Set when the window size changed.
     bool toggle_vsync = false;  ///< Set when V was pressed.
-    bool toggle_auto = false;  ///< Set when Space was pressed.
+    bool toggle_auto = false;  ///< Set when A was pressed.
+    latency_test::upload_server_t *upload_server = nullptr;  ///< Latency Cam's upload server, when running.
+    std::filesystem::path results_dir;  ///< Where uploads and their results are saved.
+    bool close_prompt_open = false;  ///< Set while asking whether to close during an upload or analysis.
+    latency_test::fps_entry_t fps_entry;  ///< A frame rate being typed after F.
+    std::optional<double> new_fps;  ///< A frame rate entered and not applied yet; 0 for the display's refresh rate.
     int width {};  ///< Current back buffer width.
     int height {};  ///< Current back buffer height.
     latency_test::layout_t layout {};  ///< Pattern layout for the current size.
@@ -479,20 +485,37 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
       }
       if (raw.data.keyboard.Flags & RI_KEY_BREAK) {
         app.keys_down[vkey] = false;
+        return;
+      }
+      if (app.keys_down[vkey]) {
+        return;  // Auto repeat
+      }
+      app.keys_down[vkey] = true;
+
+      if (app.fps_entry.active) {
+        // While a frame rate is typed, keys edit it instead of flipping the trigger, and Esc cancels
+        double fps = 0;
+        if (app.fps_entry.key(vkey, fps) == latency_test::fps_entry_t::result_e::apply) {
+          app.new_fps = fps;
+        }
+        app.status_text.clear();
       }
       else if (vkey == VK_ESCAPE) {
         // Esc quits instead of counting as an input
         PostMessageW(app.hwnd, WM_CLOSE, 0, 0);
       }
-      else if (vkey == 'V' || vkey == VK_SPACE) {
-        // V toggles v-sync and Space automatic flips, instead of counting as inputs
-        if (!app.keys_down[vkey]) {
-          app.keys_down[vkey] = true;
-          (vkey == 'V' ? app.toggle_vsync : app.toggle_auto) = true;
-        }
+      else if (vkey == 'V') {
+        // V toggles v-sync, A automatic flips and F starts typing a frame rate, instead of counting as inputs
+        app.toggle_vsync = true;
       }
-      else if (!app.keys_down[vkey]) {
-        app.keys_down[vkey] = true;
+      else if (vkey == 'A') {
+        app.toggle_auto = true;
+      }
+      else if (vkey == 'F') {
+        app.fps_entry.start();
+        app.status_text.clear();
+      }
+      else {
         queue_input(app, 'k', vkey, qpc);
       }
     }
@@ -539,6 +562,30 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
         if (LOWORD(lparam) == HTCLIENT) {
           SetCursor(nullptr);
           return TRUE;
+        }
+        break;
+      case WM_CLOSE:
+        if (app && app->close_prompt_open) {
+          return 0;  // Already asking; Esc pressed again doesn't stack another dialog
+        }
+        if (app && app->upload_server) {
+          const std::string busy = app->upload_server->busy_description();
+          if (!busy.empty()) {
+            const std::string text = std::format(
+              "The host {}.\n\n"
+              "If you close now, an upload in progress is lost. An analysis finishes in the background and its report "
+              "is still saved in {}, but Latency Cam on the phone can't fetch the results.\n\n"
+              "Close anyway?",
+              busy,
+              to_utf8(app->results_dir.wstring())
+            );
+            app->close_prompt_open = true;
+            const int answer = MessageBoxW(hwnd, to_utf16(text).c_str(), L"latency-test", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2);
+            app->close_prompt_open = false;
+            if (answer != IDYES) {
+              return 0;
+            }
+          }
         }
         break;
       case WM_DESTROY:
@@ -718,6 +765,9 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
         app.rate_window_qpc = presented_qpc;
         app.rate_frames = 0;
       }
+      app.status.entering_fps = app.fps_entry.active;
+      app.status.fps_entry = app.fps_entry.text;
+      app.status.fps_entry_invalid = app.fps_entry.invalid;
       app.status_text = to_utf16(latency_test::status_text(app.status));
     }
   }
@@ -1005,6 +1055,28 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
   }
 
   /**
+   * @brief Change the background frame rate, and note the change in both logs and on screen.
+   *
+   * @param app App state.
+   * @param fps New frame rate, or 0 to follow the display's refresh rate again.
+   */
+  void set_fps(app_t &app, double fps) {
+    app.status.fps_from_display = fps <= 0;
+    app.options.fps = fps > 0 ? fps : (app.status.refresh_hz > 0 ? app.status.refresh_hz : 60);
+    app.status.fps = app.options.fps;
+    // Count the presented rate afresh, and redraw the text on the next frame
+    app.rate_window_qpc = 0;
+    app.status.measured_fps = 0;
+    app.status_text.clear();
+    const std::string note = std::format("# fps={} from frame {}\n", app.options.fps, app.frame);
+    for (std::FILE *log : {app.log, app.frames_log}) {
+      if (log) {
+        std::fputs(note.c_str(), log);
+      }
+    }
+  }
+
+  /**
    * @brief Run the test app.
    *
    * @param options Command line options.
@@ -1107,14 +1179,18 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
           std::fflush(app.frames_log);
         }
       };
+      app.results_dir = config.results_dir;
       const std::string upload_error = upload_server.start(app.options.time_port, std::move(config));
       app.status.latency_cam_port = upload_error.empty() ? app.options.time_port : 0;
+      if (upload_error.empty()) {
+        app.upload_server = &upload_server;
+      }
     }
 
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
     const HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
 
-    const auto period = static_cast<std::int64_t>(static_cast<double>(app.qpc_frequency) / app.options.fps);
+    std::int64_t period = static_cast<std::int64_t>(static_cast<double>(app.qpc_frequency) / app.options.fps);
     std::int64_t next_frame = qpc_now();
     app.rng.seed(static_cast<std::uint32_t>(next_frame));
     if (app.options.auto_flip) {
@@ -1136,6 +1212,7 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
 
       if (app.resize_pending) {
         if (const HRESULT hr = resize(app); FAILED(hr)) {
+          app.upload_server = nullptr;
           upload_server.stop();
           stop_time_server(time_server);
           return fail("Resizing the swap chain", hr);
@@ -1149,6 +1226,12 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
       if (app.toggle_auto) {
         app.toggle_auto = false;
         set_auto_flip(app, !app.options.auto_flip, qpc_now());
+      }
+      if (app.new_fps) {
+        set_fps(app, *app.new_fps);
+        app.new_fps.reset();
+        period = static_cast<std::int64_t>(static_cast<double>(app.qpc_frequency) / app.options.fps);
+        next_frame = qpc_now();
       }
 
       // Inputs are answered right away; the background only moves on at the chosen rate. With v-sync at the
@@ -1179,6 +1262,7 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
     }
 
     CloseHandle(timer);
+    app.upload_server = nullptr;
     upload_server.stop();
     stop_time_server(time_server);
     if (app.log) {

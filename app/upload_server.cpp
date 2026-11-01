@@ -292,6 +292,18 @@ namespace latency_test {
           const auto final_path = config_.results_dir / (route.name + (route.kind == route_e::upload_video ? ".mp4" : ".camera.json"));
           auto part_path = final_path;
           part_path += L".part";
+
+          // Marked busy until the file is in place, however this ends, so closing the app can warn about it
+          uploading_ = true;
+
+          struct clear_t {
+            std::atomic<bool> &flag;  ///< Flag to clear.
+
+            ~clear_t() {
+              flag = false;
+            }
+          } clear_uploading {uploading_};
+
           {
             std::ofstream out(part_path, std::ios::binary | std::ios::trunc);
             if (!out) {
@@ -399,8 +411,27 @@ namespace latency_test {
       config_.flush_logs();
     }
 
+    // Keep a copy of the logs with the recording: the app starts them afresh each run, so without it the recording
+    // could not be analysed again later
+    const auto host_log = config_.results_dir / (name + ".host.csv");
+    const auto host_frames_log = config_.results_dir / (name + ".host.frames.csv");
+    // The same rule as frames_log_path() in pattern.h: .csv becomes .frames.csv, anything else gets it appended
+    auto frames_source = config_.host_log;
+    if (frames_source.extension() == L".csv") {
+      frames_source.replace_extension();
+    }
+    frames_source += L".frames.csv";
+    std::filesystem::copy_file(config_.host_log, host_log, std::filesystem::copy_options::overwrite_existing, fs_error);
+    if (!fs_error) {
+      std::filesystem::copy_file(frames_source, host_frames_log, std::filesystem::copy_options::overwrite_existing, fs_error);
+    }
+    if (fs_error) {
+      error = "could not copy the host logs: " + fs_error.message();
+      return false;
+    }
+
     std::wstring command = quote(python) + python_args + L" -u " + quote(analyzer.wstring()) + L" " + quote(video.wstring()) +
-                           std::format(L" --stream {}x{}", config_.width, config_.height) + L" --host-log " + quote(config_.host_log.wstring()) +
+                           std::format(L" --stream {}x{}", config_.width, config_.height) + L" --host-log " + quote(host_log.wstring()) +
                            L" --out " + quote(config_.results_dir.wstring()) + L" --report";
     if (config_.fps > 0) {
       command += std::format(L" --stream-fps {}", config_.fps);
@@ -434,6 +465,29 @@ namespace latency_test {
     std::filesystem::remove(config_.results_dir / (name + ".summary.json"), ignored);
     analyses_[name] = process.hProcess;
     return true;
+  }
+
+  std::string upload_server_t::busy_description() {
+    std::vector<std::string> analysing;
+    {
+      std::lock_guard lock(mutex_);
+      for (const auto &[name, handle] : analyses_) {
+        if (WaitForSingleObject(handle, 0) == WAIT_TIMEOUT) {
+          analysing.push_back(name);
+        }
+      }
+    }
+    std::string text;
+    if (uploading_) {
+      text = "is still receiving a recording from Latency Cam";
+    }
+    if (!analysing.empty()) {
+      text += text.empty() ? "is still analysing " : ", and analysing ";
+      for (std::size_t i = 0; i < analysing.size(); ++i) {
+        text += (i == 0 ? "" : i + 1 == analysing.size() ? " and " : ", ") + analysing[i];
+      }
+    }
+    return text;
   }
 
   std::string upload_server_t::status_json(const std::string &name) {

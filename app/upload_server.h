@@ -57,6 +57,13 @@ namespace latency_test {
      */
     void stop();
 
+    /**
+     * @brief Describe what would be cut short by closing the app: an upload being received and analyses running.
+     *
+     * @return Empty when nothing is in progress, otherwise e.g. "is still analysing run_1".
+     */
+    std::string busy_description();
+
   private:
     /**
      * @brief Accept and serve connections until stopped.
@@ -91,6 +98,7 @@ namespace latency_test {
     std::uintptr_t listener_ = ~std::uintptr_t {0};  ///< Listening socket.
     std::thread thread_;  ///< Accept loop.
     std::atomic<bool> running_ {false};  ///< Cleared to stop the accept loop.
+    std::atomic<bool> uploading_ {false};  ///< Set while a file is being received.
     std::mutex mutex_;  ///< Guards analyses_.
     std::map<std::string, void *> analyses_;  ///< Process handle of each analysis started, by recording name.
   };

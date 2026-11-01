@@ -245,7 +245,7 @@ namespace latency_test {
     "                   present time goes to the same name ending .frames.csv.\n"
     "  --no-auto        Start without automatic flips. By default the trigger flips on\n"
     "                   its own every 150 to 400 ms, at random, on the next scheduled\n"
-    "                   frame (key presses still get an extra frame). Space toggles it.\n"
+    "                   frame (key presses still get an extra frame). A toggles it.\n"
     "  --auto-interval <min>-<max>\n"
     "                   Interval range for automatic flips in ms, e.g. 100-300.\n"
     "  --time-port <n>  Port answering Latency Cam: clock sync on UDP and uploads on TCP\n"
@@ -257,8 +257,9 @@ namespace latency_test {
     "  --python <path>  Python to run it with (default: python.exe or py.exe on PATH).\n"
     "  --help           Show this text.\n"
     "\n"
-    "Any key press (except Esc, V and Space) or mouse button press flips the trigger\n"
-    "patch, as do the automatic flips. Space toggles automatic flips; V toggles v-sync.\n"
+    "Any key press (except Esc, A, F and V) or mouse button press flips the trigger\n"
+    "patch, as do the automatic flips. A toggles automatic flips, V toggles v-sync, and\n"
+    "F types a new frame rate (Enter applies, empty for the display's refresh rate).\n"
     "The band at the bottom shows the host clock and the time since the last input, in ms.\n"
     "Close with Esc, Alt+F4 or by ending the stream.\n";
 
@@ -393,6 +394,100 @@ namespace latency_test {
     double auto_min_ms = 0;  ///< Shortest automatic flip interval.
     double auto_max_ms = 0;  ///< Longest automatic flip interval.
     int latency_cam_port = 0;  ///< Port Latency Cam can use; 0 when the servers are off or failed.
+    bool entering_fps = false;  ///< Whether a new frame rate is being typed.
+    std::string fps_entry;  ///< The frame rate typed so far.
+    bool fps_entry_invalid = false;  ///< Whether the last Enter was refused as out of range.
+  };
+
+  /**
+   * @brief Typing a new frame rate in the app: F starts, digits and '.' type, Backspace deletes, Enter applies and
+   * Esc cancels. Enter with nothing typed goes back to the display's refresh rate.
+   */
+  struct fps_entry_t {
+    /**
+     * @brief What a key did.
+     */
+    enum class result_e {
+      typing,  ///< The entry carries on.
+      apply,  ///< A frame rate was entered.
+      cancel,  ///< The entry was cancelled.
+    };
+
+    static constexpr unsigned key_back = 0x08;  ///< VK_BACK
+    static constexpr unsigned key_return = 0x0D;  ///< VK_RETURN
+    static constexpr unsigned key_escape = 0x1B;  ///< VK_ESCAPE
+    static constexpr unsigned key_numpad0 = 0x60;  ///< VK_NUMPAD0, followed by the other digits
+    static constexpr unsigned key_decimal = 0x6E;  ///< VK_DECIMAL
+    static constexpr unsigned key_period = 0xBE;  ///< VK_OEM_PERIOD
+    static constexpr std::size_t max_length = 7;  ///< Longest entry, e.g. 1000.00
+
+    bool active = false;  ///< Whether a frame rate is being typed.
+    bool invalid = false;  ///< Whether the last Enter was refused.
+    std::string text;  ///< What has been typed.
+
+    /**
+     * @brief Start typing a new frame rate.
+     */
+    void start() {
+      active = true;
+      invalid = false;
+      text.clear();
+    }
+
+    /**
+     * @brief Handle a key press while typing.
+     *
+     * @param vkey Windows virtual key code.
+     * @param fps Set to the frame rate entered when the result is apply; 0 means the display's refresh rate.
+     * @return What the key did.
+     */
+    result_e key(unsigned vkey, double &fps) {
+      char typed = 0;
+      if (vkey >= '0' && vkey <= '9') {
+        typed = static_cast<char>(vkey);
+      }
+      else if (vkey >= key_numpad0 && vkey <= key_numpad0 + 9) {
+        typed = static_cast<char>('0' + (vkey - key_numpad0));
+      }
+      else if ((vkey == key_period || vkey == key_decimal) && text.find('.') == std::string::npos) {
+        typed = '.';
+      }
+      if (typed) {
+        if (text.size() < max_length) {
+          text += typed;
+        }
+        invalid = false;
+        return result_e::typing;
+      }
+      if (vkey == key_back) {
+        if (!text.empty()) {
+          text.pop_back();
+        }
+        invalid = false;
+        return result_e::typing;
+      }
+      if (vkey == key_escape) {
+        active = false;
+        return result_e::cancel;
+      }
+      if (vkey == key_return) {
+        if (text.empty()) {
+          fps = 0;
+          active = false;
+          return result_e::apply;
+        }
+        const auto value = parse_number(text, 1, 1000);
+        if (!value) {
+          invalid = true;
+          return result_e::typing;
+        }
+        fps = *value;
+        active = false;
+        return result_e::apply;
+      }
+      // Other keys are ignored while typing, so they don't flip the trigger
+      return result_e::typing;
+    }
   };
 
   /**
@@ -407,7 +502,7 @@ namespace latency_test {
       const auto [end, error] = std::to_chars(buffer, buffer + sizeof(buffer), value, std::chars_format::fixed, value == static_cast<int>(value) ? 0 : 1);
       return std::string(buffer, end);
     };
-    std::string text = number(status.fps) + " fps" + (status.fps_from_display ? " (the display's refresh)" : " (--fps)");
+    std::string text = number(status.fps) + " fps" + (status.fps_from_display ? " (the display's refresh, F sets)" : " (F sets)");
     text += status.refresh_hz > 0 ? " \xC2\xB7 display " + std::to_string(status.refresh_hz) + " Hz" : " \xC2\xB7 display rate unknown";
     if (status.vsync) {
       text += status.fps_from_display ? " \xC2\xB7 v-sync on, paced by the display" : " \xC2\xB7 v-sync on";
@@ -416,9 +511,16 @@ namespace latency_test {
       text += status.tearing ? " \xC2\xB7 v-sync off, tearing" : " \xC2\xB7 v-sync off (no tearing support)";
     }
     text += " (V toggles)\n";
+    if (status.entering_fps) {
+      // The second line becomes the prompt while a frame rate is typed
+      text += "New frame rate: " + status.fps_entry + "_";
+      text += status.fps_entry_invalid ? " \xC2\xB7 must be 1 to 1000" : " \xC2\xB7 Enter applies (empty: the display's refresh)";
+      text += " \xC2\xB7 Esc cancels";
+      return text;
+    }
     text += status.measured_fps > 0 ? "presenting " + number(status.measured_fps) + " fps" : "presenting \xE2\x80\xA6";
     text += status.auto_flip ? " \xC2\xB7 auto flips every " + number(status.auto_min_ms) + "\xE2\x80\x93" + number(status.auto_max_ms) + " ms" : " \xC2\xB7 auto flips off";
-    text += " (Space toggles)";
+    text += " (A toggles)";
     text += status.latency_cam_port > 0 ? " \xC2\xB7 Latency Cam port " + std::to_string(status.latency_cam_port) : " \xC2\xB7 Latency Cam off";
     return text;
   }

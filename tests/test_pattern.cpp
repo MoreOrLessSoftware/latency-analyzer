@@ -287,8 +287,8 @@ TEST(LatencyTestPatternTest, StatusTextDescribesPresentation) {
   status.auto_max_ms = 400;
   status.latency_cam_port = 48100;
   EXPECT_EQ(latency_test::status_text(status),
-            "120 fps (the display's refresh) \xC2\xB7 display 120 Hz \xC2\xB7 v-sync off, tearing (V toggles)\n"
-            "presenting 119.8 fps \xC2\xB7 auto flips every 150\xE2\x80\x93" "400 ms (Space toggles) \xC2\xB7 Latency Cam port 48100");
+            "120 fps (the display's refresh, F sets) \xC2\xB7 display 120 Hz \xC2\xB7 v-sync off, tearing (V toggles)\n"
+            "presenting 119.8 fps \xC2\xB7 auto flips every 150\xE2\x80\x93" "400 ms (A toggles) \xC2\xB7 Latency Cam port 48100");
 
   status.fps = 117.5;
   status.fps_from_display = false;
@@ -298,8 +298,17 @@ TEST(LatencyTestPatternTest, StatusTextDescribesPresentation) {
   status.auto_flip = false;
   status.latency_cam_port = 0;
   EXPECT_EQ(latency_test::status_text(status),
-            "117.5 fps (--fps) \xC2\xB7 display rate unknown \xC2\xB7 v-sync on (V toggles)\n"
-            "presenting \xE2\x80\xA6 \xC2\xB7 auto flips off (Space toggles) \xC2\xB7 Latency Cam off");
+            "117.5 fps (F sets) \xC2\xB7 display rate unknown \xC2\xB7 v-sync on (V toggles)\n"
+            "presenting \xE2\x80\xA6 \xC2\xB7 auto flips off (A toggles) \xC2\xB7 Latency Cam off");
+
+  // While a frame rate is typed, the second line is the prompt
+  status.entering_fps = true;
+  status.fps_entry = "97";
+  EXPECT_NE(latency_test::status_text(status).find("\nNew frame rate: 97_ \xC2\xB7 Enter applies (empty: the display's refresh) \xC2\xB7 Esc cancels"), std::string::npos);
+  status.fps_entry_invalid = true;
+  EXPECT_NE(latency_test::status_text(status).find("must be 1 to 1000"), std::string::npos);
+  status.entering_fps = false;
+  status.fps_entry_invalid = false;
 
   // At the display's own rate, v-sync lets the display set the pace
   status.fps_from_display = true;
@@ -308,4 +317,55 @@ TEST(LatencyTestPatternTest, StatusTextDescribesPresentation) {
   status.vsync = false;
   status.tearing = false;
   EXPECT_NE(latency_test::status_text(status).find("v-sync off (no tearing support)"), std::string::npos);
+}
+
+TEST(LatencyTestPatternTest, FpsEntryTypesAppliesAndCancels) {
+  using result = latency_test::fps_entry_t::result_e;
+  latency_test::fps_entry_t entry;
+  double fps = -1;
+
+  entry.start();
+  EXPECT_TRUE(entry.active);
+  EXPECT_EQ(entry.key('9', fps), result::typing);
+  EXPECT_EQ(entry.key(0x60 + 7, fps), result::typing);  // numpad 7
+  EXPECT_EQ(entry.key(0xBE, fps), result::typing);  // .
+  EXPECT_EQ(entry.key('5', fps), result::typing);
+  EXPECT_EQ(entry.key(0x6E, fps), result::typing);  // a second decimal point is ignored
+  EXPECT_EQ(entry.key('Q', fps), result::typing);  // other keys are ignored
+  EXPECT_EQ(entry.text, "97.5");
+  EXPECT_EQ(entry.key(0x08, fps), result::typing);  // backspace
+  EXPECT_EQ(entry.text, "97.");
+  EXPECT_EQ(entry.key(0x0D, fps), result::apply);
+  EXPECT_DOUBLE_EQ(fps, 97);
+  EXPECT_FALSE(entry.active);
+
+  // Out of range keeps the prompt open and flags it
+  entry.start();
+  entry.key('2', fps);
+  entry.key('0', fps);
+  entry.key('0', fps);
+  entry.key('0', fps);
+  EXPECT_EQ(entry.key(0x0D, fps), result::typing);
+  EXPECT_TRUE(entry.invalid);
+  EXPECT_TRUE(entry.active);
+  entry.key(0x08, fps);
+  EXPECT_FALSE(entry.invalid);
+
+  // Empty means the display's refresh rate
+  entry.start();
+  EXPECT_EQ(entry.key(0x0D, fps), result::apply);
+  EXPECT_DOUBLE_EQ(fps, 0);
+
+  // Esc cancels
+  entry.start();
+  entry.key('5', fps);
+  EXPECT_EQ(entry.key(0x1B, fps), result::cancel);
+  EXPECT_FALSE(entry.active);
+
+  // The entry stops at seven characters
+  entry.start();
+  for (int i = 0; i < 10; ++i) {
+    entry.key('1', fps);
+  }
+  EXPECT_EQ(entry.text, "1111111");
 }
