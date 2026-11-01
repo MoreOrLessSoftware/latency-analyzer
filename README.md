@@ -26,6 +26,8 @@ the key press to the trigger being presented.
 | `analyzer/analyze.bat` | Drag and drop wrapper for Windows |
 | `tests/test_pattern.cpp` | Unit tests for the test pattern layout and options |
 | `tests/test_analyzer.py` | Unit tests for the analyzer and report helpers |
+| `analyzer/time_server.py` | Host clock server for Latency Cam |
+| `android/` | Latency Cam, an Android app that records 240 fps video with every frame timed on the host's clock (see [android/README.md](android/README.md)) |
 
 ## What you need
 
