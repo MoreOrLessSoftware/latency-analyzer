@@ -2,7 +2,7 @@
 
 An Android app that films the client display at 240 fps while keeping the phone's clock synced with the host's
 QueryPerformanceCounter. Every camera frame then has a time on the host's clock, so the analyzer can time what the
-camera saw against what the host logged, without Moonlight's latency marker.
+camera saw against what the host logged.
 
 ## Build and install
 

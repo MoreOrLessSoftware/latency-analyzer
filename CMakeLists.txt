@@ -46,7 +46,6 @@ install(FILES
         analyzer/camera_timing.py
         analyzer/traces.py
         analyzer/time_server.py
-        analyzer/analyze.bat
         README.md
         DESTINATION .)
 
