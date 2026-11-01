@@ -1,9 +1,11 @@
 package ca.mlsoft.latencycam;
 
 import android.content.ContentResolver;
+import android.content.ContentValues;
 import android.net.Uri;
 import android.os.ParcelFileDescriptor;
 import android.os.SystemClock;
+import android.provider.MediaStore;
 
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -30,7 +32,14 @@ final class Uploader {
     interface Listener {
         void onProgress(String text);
 
-        void onDone(JSONObject summary, String reportUrl);
+        /**
+         * The analysis finished.
+         *
+         * @param summary The analyzer's summary.
+         * @param report The report saved on the phone, or null when it couldn't be downloaded.
+         * @param reportUrl The report on the host, while latency-test.exe runs.
+         */
+        void onDone(JSONObject summary, Uri report, String reportUrl);
 
         void onFailed(String message);
     }
@@ -72,7 +81,16 @@ final class Uploader {
                 }
                 String state = status.optString("state");
                 if ("done".equals(state)) {
-                    listener.onDone(status.optJSONObject("summary"), "http://" + host.getHostAddress() + ":" + port + status.optString("report"));
+                    String reportUrl = "http://" + host.getHostAddress() + ":" + port + status.optString("report");
+                    // Keep the report on the phone, so it can be read after latency-test.exe has closed
+                    listener.onProgress("Downloading the report…");
+                    Uri report = null;
+                    try {
+                        report = download(reportUrl, name + ".report.html", "text/html");
+                    } catch (IOException e) {
+                        listener.onProgress("Could not download the report: " + e.getMessage());
+                    }
+                    listener.onDone(status.optJSONObject("summary"), report, reportUrl);
                 } else if ("failed".equals(state)) {
                     listener.onFailed("The analysis failed:\n" + status.optString("output").trim());
                 } else {
@@ -145,6 +163,54 @@ final class Uploader {
                 throw new IOException(error);
             }
             return new JSONObject(body);
+        } finally {
+            connection.disconnect();
+        }
+    }
+
+    /**
+     * Download a file into Download/LatencyCam.
+     *
+     * @param url Where to get it.
+     * @param fileName Name to save it as.
+     * @param mime Its MIME type.
+     * @return The saved file.
+     */
+    private Uri download(String url, String fileName, String mime) throws IOException {
+        HttpURLConnection connection = (HttpURLConnection) new URL(url).openConnection();
+        try {
+            connection.setConnectTimeout(5000);
+            connection.setReadTimeout(60000);
+            int code = connection.getResponseCode();
+            if (code != 200) {
+                throw new IOException("the host answered " + code);
+            }
+            ContentValues values = new ContentValues();
+            values.put(MediaStore.MediaColumns.DISPLAY_NAME, fileName);
+            values.put(MediaStore.MediaColumns.MIME_TYPE, mime);
+            values.put(MediaStore.MediaColumns.RELATIVE_PATH, "Download/LatencyCam");
+            values.put(MediaStore.MediaColumns.IS_PENDING, 1);
+            Uri uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+            if (uri == null) {
+                throw new IOException("could not create " + fileName);
+            }
+            try (InputStream in = connection.getInputStream(); OutputStream out = resolver.openOutputStream(uri)) {
+                if (out == null) {
+                    throw new IOException("could not write " + fileName);
+                }
+                byte[] buffer = new byte[CHUNK];
+                int read;
+                while ((read = in.read(buffer)) > 0) {
+                    out.write(buffer, 0, read);
+                }
+            } catch (IOException e) {
+                resolver.delete(uri, null, null);
+                throw e;
+            }
+            ContentValues done = new ContentValues();
+            done.put(MediaStore.MediaColumns.IS_PENDING, 0);
+            resolver.update(uri, done, null, null);
+            return uri;
         } finally {
             connection.disconnect();
         }

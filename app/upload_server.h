@@ -68,7 +68,7 @@ namespace latency_test {
 
     /**
      * @brief Describe what is in progress: a recording being received, an analysis running, an analysis Latency Cam
-     * hasn't fetched the result of yet, or a video just uploaded whose analysis Latency Cam is about to start. The
+     * hasn't downloaded the report of yet, or a video just uploaded whose analysis Latency Cam is about to start. The
      * last two only count for 15 s, in case the phone has gone away.
      *
      * @return The activity; busy is false when the app can close without cutting anything short.
@@ -82,7 +82,7 @@ namespace latency_test {
     struct analysis_t {
       void *process = nullptr;  ///< Process handle.
       std::uint64_t finished_ms = 0;  ///< GetTickCount64 when it was first seen finished; 0 while running.
-      bool delivered = false;  ///< Whether Latency Cam has fetched its final status.
+      bool delivered = false;  ///< Whether Latency Cam has downloaded the report (or seen that the analysis failed).
     };
 
     /**

@@ -30,8 +30,10 @@ timestamps from the `REALTIME` source. Check with `adb shell dumpsys media.camer
    press it again to stop. Each recording is saved to `Download/LatencyCam` as `NAME_DATE-TIME.mp4` with
    `NAME_DATE-TIME.camera.json` next to it.
 4. Choose **Upload & analyze** to send both files to `latency-test.exe` on port 48100, which runs the analyzer. The
-   app switches to the **Results** tab, shows the headline numbers when it's done, and **Open report** opens the full
-   report in the browser; **Retry upload** appears if it fails. **Discard** deletes the recording from the phone.
+   app switches to the **Results** tab and shows the headline numbers when it's done. It also downloads the report to
+   `Download/LatencyCam/NAME.report.html`, next to the recording, and **Open report** shows that copy in the app, so
+   it can be read after `latency-test.exe` has closed. **Retry upload** appears if it fails. **Discard** deletes the
+   recording from the phone.
    Recording again without choosing keeps the last one on the phone, to copy over later, for example with
    `adb pull /sdcard/Download/LatencyCam/`.
 

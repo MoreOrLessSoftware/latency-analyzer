@@ -409,6 +409,11 @@ namespace latency_test {
             return;
           }
           respond(client, "200 OK", "text/html; charset=utf-8", html);
+          // Latency Cam keeps a copy of the report, so once it has it the app may close
+          std::lock_guard lock(mutex_);
+          if (const auto it = analyses_.find(route.name); it != analyses_.end()) {
+            it->second.delivered = true;
+          }
           return;
         }
 
@@ -568,7 +573,7 @@ namespace latency_test {
     for (const auto &[name, analysis] : analyses_) {
       if (!analysis.delivered && now - analysis.finished_ms < grace_ms) {
         activity.busy = true;
-        activity.description = std::format("Analysed {}; waiting for Latency Cam to fetch the results", name);
+        activity.description = std::format("Analysed {}; waiting for Latency Cam to download the report", name);
         activity.percent = 100;
         return activity;
       }
@@ -590,11 +595,11 @@ namespace latency_test {
         if (WaitForSingleObject(it->second.process, 0) == WAIT_TIMEOUT) {
           return "{\"state\":\"analyzing\"}";
         }
-        // The phone has its answer now, so the app may close
-        it->second.delivered = true;
         DWORD code = 1;
         GetExitCodeProcess(it->second.process, &code);
         if (code != 0) {
+          // A failed analysis has no report to download, so the phone has all there is
+          it->second.delivered = true;
           return std::format("{{\"state\":\"failed\",\"exit_code\":{},\"output\":\"{}\"}}", code, json_escape(tail(dir / (name + ".analysis.txt"), 15)));
         }
       }

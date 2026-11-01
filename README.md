@@ -49,8 +49,9 @@ the key press to the trigger being presented.
    `opencv-python-headless`. `--analyzer` and `--python` point elsewhere.
 2. **Phone:** open Latency Cam ([android/README.md](android/README.md)) on the same network. Wait for the sync line to
    turn green, frame the whole client display, enter a test name and record for 10–30 s.
-3. **Results:** after **Stop**, the phone uploads the recording, the host analyses it, and the phone shows the
-   headline numbers with an **Open report** button. Each recording gets its own folder, `results\NAME\`, holding the
+3. **Results:** after **Stop** and **Upload & analyze**, the host analyses the recording and the phone shows the
+   headline numbers. The phone also keeps a copy of the report, which **Open report** shows without the host. On the
+   host, each recording gets its own folder, `results\NAME\`, holding the
    video, its timing file, copies of the host's logs and everything the analysis wrote. `results` sits next to
    `latency-test.exe`, or is `Documents\Latency Cam` when that can't be written (under Program Files, for example).
    `--results` changes it.
@@ -204,7 +205,7 @@ pass `--results`.
    | **A** | Toggles automatic flips. |
    | **V** | Toggles v-sync. With v-sync on and no `--fps`, the display sets the pace: each present waits for the display to take the previous frame, so frames follow its refresh instead of the app's timer. That adds about a frame of latency. Each frame's line in `.frames.csv` records whether v-sync was on. |
    | **F** | Types a new frame rate in the status band: digits, `.` and Backspace edit it, Enter applies it (nothing typed goes back to the display's refresh rate) and Esc cancels. A rate just off the display's, such as 97 at 100 Hz, makes frames drift through the display's scan, which shows the scan wait apart from the display's own delay. |
-   | **Esc** | Quits (or cancels typing a frame rate). While Latency Cam is uploading, an analysis is running or the phone hasn't fetched a result yet, the test pattern closes and a small window shows the progress; it closes by itself, and the app with it, when everything is done. **Close anyway** quits at once: an analysis then carries on in the background and still saves its report, but the phone can't fetch the results. |
+   | **Esc** | Quits (or cancels typing a frame rate). While Latency Cam is uploading, an analysis is running or the phone hasn't downloaded the report yet, the test pattern closes and a small window shows the progress; it closes by itself, and the app with it, when everything is done (it gives the phone up to 15 s to start an analysis or download a report). **Close anyway** quits at once: an analysis then carries on in the background and still saves its report on the host, but the phone can't fetch it. |
 3. For the marker test, automatic flips must be off: start the app with `--no-auto`, or press A before the next
    step. Otherwise the trigger flips without a press and the pairing goes wrong.
 4. Press **Ctrl+Alt+Shift+T** in Moonlight to turn the marker on. It appears a quarter of the way across the screen,

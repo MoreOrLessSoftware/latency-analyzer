@@ -92,6 +92,7 @@ public class MainActivity extends Activity implements Recorder.Listener {
     private Uri uploadVideo;
     private Uri uploadTiming;
     private String reportUrl;
+    private Uri savedReport;  // The report downloaded to the phone, readable without the host
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -117,13 +118,18 @@ public class MainActivity extends Activity implements Recorder.Listener {
         preview.setSurfaceTextureListener(new TextureView.SurfaceTextureListener() {
             @Override
             public void onSurfaceTextureAvailable(SurfaceTexture texture, int width, int height) {
+                // TextureView sizes its buffers to the view; the camera needs exactly the recording size
+                texture.setDefaultBufferSize(Recorder.WIDTH, Recorder.HEIGHT);
                 fitPreview();
                 openCameraIfReady();
             }
 
             @Override
             public void onSurfaceTextureSizeChanged(SurfaceTexture texture, int width, int height) {
+                // Resizing the view resets the buffer size to the view's, which the high speed session refuses
+                texture.setDefaultBufferSize(Recorder.WIDTH, Recorder.HEIGHT);
                 fitPreview();
+                openCameraIfReady();
             }
 
             @Override
@@ -238,7 +244,9 @@ public class MainActivity extends Activity implements Recorder.Listener {
         reportButton.setText("Open report");
         reportButton.setVisibility(View.GONE);
         reportButton.setOnClickListener(v -> {
-            if (reportUrl != null) {
+            if (savedReport != null) {
+                startActivity(new Intent(this, ReportActivity.class).setData(savedReport));
+            } else if (reportUrl != null) {
                 startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(reportUrl)));
             }
         });
@@ -446,6 +454,7 @@ public class MainActivity extends Activity implements Recorder.Listener {
         uploadVideo = video;
         uploadTiming = timing;
         reportUrl = null;
+        savedReport = null;
         reportButton.setVisibility(View.GONE);
         retryButton.setVisibility(View.GONE);
         resultTitle.setText(name);
@@ -514,6 +523,11 @@ public class MainActivity extends Activity implements Recorder.Listener {
 
     private void openCameraIfReady() {
         if (!resumed || cameraOpen || !preview.isAvailable() || checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            return;
+        }
+        // Wait for the preview's final size: resizing it after the session exists would change its buffers' size
+        ViewGroup.LayoutParams params = preview.getLayoutParams();
+        if (params.width <= 0 || preview.getWidth() != params.width || preview.getHeight() != params.height) {
             return;
         }
         cameraOpen = true;
@@ -604,10 +618,13 @@ public class MainActivity extends Activity implements Recorder.Listener {
         }
 
         @Override
-        public void onDone(JSONObject summary, String url) {
+        public void onDone(JSONObject summary, Uri report, String url) {
             ui.post(() -> {
-                resultText.setText(Uploader.describe(summary));
+                String text = Uploader.describe(summary);
+                text += report != null ? "\n\nReport saved in Download/LatencyCam." : "\n\nThe report couldn't be saved; it opens from the host while latency-test runs.";
+                resultText.setText(text);
                 reportUrl = url;
+                savedReport = report;
                 reportButton.setVisibility(View.VISIBLE);
             });
         }
