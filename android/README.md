@@ -21,8 +21,8 @@ timestamps from the `REALTIME` source. Check with `adb shell dumpsys media.camer
 
 ## Use
 
-1. On the host, run `python analyzer/time_server.py`. Allow Python through the firewall for UDP port 48100 when
-   asked.
+1. On the host, run `latency-test.exe`, which answers clock sync requests on UDP port 48100. Allow it through the
+   firewall when asked. Without the app, `python analyzer/time_server.py` answers them instead.
 2. Open Latency Cam on the phone, on the same network as the host. It finds the time server by broadcast, or type
    the host's IP. The sync line turns green once the fastest round trip is under 5 ms and the offset stays within
    0.5 ms over 10 s.

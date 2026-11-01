@@ -204,3 +204,51 @@ TEST(LatencyTestPatternTest, ParseOptionsRejectsBadInput) {
     EXPECT_EQ(error, expected);
   }
 }
+
+TEST(LatencyTestPatternTest, ParseOptionsReadsAutoAndTimeServer) {
+  std::string error;
+  auto options = parse({}, error);
+  ASSERT_TRUE(options);
+  EXPECT_FALSE(options->auto_flip);
+  EXPECT_DOUBLE_EQ(options->auto_min_ms, 150);
+  EXPECT_DOUBLE_EQ(options->auto_max_ms, 400);
+  EXPECT_EQ(options->time_port, 48100);
+
+  EXPECT_TRUE(parse({"--auto"}, error)->auto_flip);
+  options = parse({"--auto-interval", "100-300", "--time-port", "50000"}, error);
+  ASSERT_TRUE(options) << error;
+  EXPECT_TRUE(options->auto_flip);
+  EXPECT_DOUBLE_EQ(options->auto_min_ms, 100);
+  EXPECT_DOUBLE_EQ(options->auto_max_ms, 300);
+  EXPECT_EQ(options->time_port, 50000);
+  EXPECT_DOUBLE_EQ(parse({"--auto-interval", "250-250"}, error)->auto_max_ms, 250);
+  EXPECT_EQ(parse({"--no-time-server"}, error)->time_port, 0);
+  EXPECT_EQ(parse({"--time-port", "0"}, error)->time_port, 0);
+}
+
+TEST(LatencyTestPatternTest, ParseOptionsRejectsBadAutoAndTimeServer) {
+  const std::string interval_error = "--auto-interval must be <min>-<max> in ms, between 20 and 10000";
+  const std::string port_error = "--time-port must be a port number, 0 to 65535";
+  const std::vector<std::pair<std::vector<std::string_view>, std::string>> cases {
+    {{"--auto-interval"}, "--auto-interval needs a value"},
+    {{"--auto-interval", "300"}, interval_error},
+    {{"--auto-interval", "300-100"}, interval_error},
+    {{"--auto-interval", "10-100"}, interval_error},
+    {{"--auto-interval", "100-x"}, interval_error},
+    {{"--time-port"}, "--time-port needs a value"},
+    {{"--time-port", "70000"}, port_error},
+    {{"--time-port", "48100.5"}, port_error},
+  };
+  for (const auto &[args, expected] : cases) {
+    std::string error;
+    EXPECT_FALSE(parse(args, error));
+    EXPECT_EQ(error, expected);
+  }
+}
+
+TEST(LatencyTestPatternTest, FramesLogPathSitsNextToTheLog) {
+  EXPECT_EQ(latency_test::frames_log_path("C:\temp\run.csv"), "C:\temp\run.frames.csv");
+  EXPECT_EQ(latency_test::frames_log_path("run.log"), "run.log.frames.csv");
+  EXPECT_EQ(latency_test::frames_log_path(".csv"), ".frames.csv");
+  EXPECT_EQ(latency_test::frames_log_path("x"), "x.frames.csv");
+}

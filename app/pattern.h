@@ -213,6 +213,10 @@ namespace latency_test {
     double noise = 0.5;  ///< Background noise amplitude, 0 (flat gray) to 1 (full range).
     double fps = 0;  ///< Background update rate; 0 matches the display refresh rate.
     std::string log_path;  ///< CSV log path; empty picks a file in the temp directory.
+    bool auto_flip = false;  ///< Flip the trigger on its own at random intervals.
+    double auto_min_ms = 150;  ///< Shortest interval between automatic flips.
+    double auto_max_ms = 400;  ///< Longest interval between automatic flips.
+    int time_port = 48100;  ///< UDP port of the clock sync server; 0 turns it off.
   };
 
   /**
@@ -228,10 +232,17 @@ namespace latency_test {
     "                   to its bitrate (same as --noise 0).\n"
     "  --fps <n>        Background update rate (default: display refresh rate).\n"
     "  --log <path>     CSV log of inputs and the frames that answered them\n"
-    "                   (default: %TEMP%\\sunshine_latency_test.csv).\n"
+    "                   (default: %TEMP%\\sunshine_latency_test.csv). Every frame's\n"
+    "                   present time goes to the same name ending .frames.csv.\n"
+    "  --auto           Flip the trigger on its own every 150 to 400 ms, at random.\n"
+    "  --auto-interval <min>-<max>\n"
+    "                   Interval range for --auto in ms, e.g. 100-300 (implies --auto).\n"
+    "  --time-port <n>  UDP port answering Latency Cam's clock sync (default 48100).\n"
+    "  --no-time-server Do not answer clock sync requests.\n"
     "  --help           Show this text.\n"
     "\n"
-    "Any key press (except Esc) or mouse button press flips the trigger patch.\n"
+    "Any key press (except Esc) or mouse button press flips the trigger patch,\n"
+    "as does --auto.\n"
     "The band at the bottom shows the host clock and the time since the last input, in ms.\n"
     "Close with Esc, Alt+F4 or by ending the stream.\n";
 
@@ -280,6 +291,40 @@ namespace latency_test {
       else if (arg == "--no-noise") {
         options.noise = 0;
       }
+      else if (arg == "--auto") {
+        options.auto_flip = true;
+      }
+      else if (arg == "--no-time-server") {
+        options.time_port = 0;
+      }
+      else if (arg == "--auto-interval") {
+        const auto text = value();
+        if (!text) {
+          return std::nullopt;
+        }
+        const auto dash = text->find('-');
+        const auto low = dash == std::string_view::npos ? std::nullopt : parse_number(text->substr(0, dash), 20, 10000);
+        const auto high = dash == std::string_view::npos ? std::nullopt : parse_number(text->substr(dash + 1), 20, 10000);
+        if (!low || !high || *low > *high) {
+          error = "--auto-interval must be <min>-<max> in ms, between 20 and 10000";
+          return std::nullopt;
+        }
+        options.auto_flip = true;
+        options.auto_min_ms = *low;
+        options.auto_max_ms = *high;
+      }
+      else if (arg == "--time-port") {
+        const auto text = value();
+        if (!text) {
+          return std::nullopt;
+        }
+        const auto number = parse_number(*text, 0, 65535);
+        if (!number || *number != static_cast<int>(*number)) {
+          error = "--time-port must be a port number, 0 to 65535";
+          return std::nullopt;
+        }
+        options.time_port = static_cast<int>(*number);
+      }
       else if (arg == "--help" || arg == "-h" || arg == "/?") {
         options.help = true;
       }
@@ -309,5 +354,19 @@ namespace latency_test {
       }
     }
     return options;
+  }
+
+  /**
+   * @brief Path of the per-frame log that goes with an input log.
+   *
+   * @param log_path Path of the input log.
+   * @return The same path with .csv replaced by .frames.csv, or .frames.csv appended.
+   */
+  inline std::string frames_log_path(std::string_view log_path) {
+    constexpr std::string_view extension = ".csv";
+    if (log_path.size() >= extension.size() && log_path.substr(log_path.size() - extension.size()) == extension) {
+      return std::string(log_path.substr(0, log_path.size() - extension.size())) + ".frames.csv";
+    }
+    return std::string(log_path) + ".frames.csv";
   }
 }  // namespace latency_test

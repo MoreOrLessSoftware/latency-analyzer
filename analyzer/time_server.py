@@ -1,6 +1,7 @@
 """
 Answers Latency Cam's clock sync requests with the host's QueryPerformanceCounter, the clock latency-test.exe logs
-with, so the phone can map its camera timestamps onto the host's clock.
+with, so the phone can map its camera timestamps onto the host's clock. latency-test.exe answers them itself; this is
+for testing the phone without it. Only one of the two can use the port at a time.
 
   python time_server.py [--port 48100]
 

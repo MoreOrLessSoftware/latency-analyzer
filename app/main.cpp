@@ -5,17 +5,24 @@
  * Run it as a Sunshine app and stream it to the client under test. It draws the test pattern described in
  * pattern.h and answers every key press (Esc quits) or mouse button press by presenting a frame with the trigger patch flipped,
  * as soon as the input arrives: it does not wait for the next background frame or, unless --vsync is passed, for
- * vertical blank. Each input and the frame that answered it are logged to a CSV file with QueryPerformanceCounter
- * timestamps, so host side delays can be lined up with Sunshine and client logs.
+ * vertical blank. With --auto it also flips the trigger on its own at random intervals. Each input and the frame
+ * that answered it are logged to a CSV file with QueryPerformanceCounter timestamps, and every frame's present time to
+ * a second CSV, so host side delays can be lined up with Sunshine and client logs.
+ *
+ * A UDP time server answers Latency Cam's clock sync requests (see clock_sync.h) with QueryPerformanceCounter values,
+ * so what the camera films can be timed on the same clock as the logs.
  */
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #define WINVER 0x0A00
 
 // local includes
+#include "clock_sync.h"
 #include "pattern.h"
 
-// platform includes
+// platform includes (winsock2.h must come before windows.h)
+#include <winsock2.h>
+#include <mswsock.h>
 #include <d3d11.h>
 #include <d3dcompiler.h>
 #include <dxgi1_6.h>
@@ -24,9 +31,12 @@
 #include <wrl/client.h>
 
 // standard includes
+#include <atomic>
 #include <cstdio>
 #include <deque>
 #include <format>
+#include <random>
+#include <thread>
 
 using Microsoft::WRL::ComPtr;
 
@@ -193,7 +203,7 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
    */
   struct input_event_t {
     std::uint32_t seq;  ///< Sequence number, starting at 1.
-    char source;  ///< 'k' for a key, 'm' for a mouse button.
+    char source;  ///< 'k' for a key, 'm' for a mouse button, 'a' for an automatic flip.
     std::uint32_t detail;  ///< Virtual key code, or mouse button number.
     std::int64_t qpc;  ///< When the input reached the app.
   };
@@ -227,9 +237,25 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
     std::uint32_t frame = 0;  ///< Frames presented so far.
     bool keys_down[256] {};  ///< Keys currently held, to ignore auto repeat.
 
-    std::FILE *log {};  ///< CSV log.
+    std::FILE *log {};  ///< CSV log of inputs.
+    std::FILE *frames_log {};  ///< CSV log of every frame.
+    std::int64_t frames_flushed_qpc = 0;  ///< When the frames log was last flushed.
     std::int64_t qpc_start {};  ///< QueryPerformanceCounter value logged times are relative to.
     std::int64_t qpc_frequency {};  ///< QueryPerformanceCounter ticks per second.
+
+    std::mt19937 rng;  ///< Picks the intervals between automatic flips.
+    std::int64_t next_auto_qpc = 0;  ///< When the next automatic flip is due.
+  };
+
+  /**
+   * @brief The thread answering clock sync requests.
+   */
+  struct time_server_t {
+    SOCKET socket = INVALID_SOCKET;  ///< Bound UDP socket.
+    std::thread thread;  ///< Thread waiting for requests.
+    std::atomic<bool> running {false};  ///< Cleared to stop the thread.
+    std::atomic<std::uint32_t> answered {0};  ///< Requests answered so far.
+    bool winsock = false;  ///< Whether WSAStartup succeeded and needs a WSACleanup.
   };
 
   /**
@@ -252,6 +278,98 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
    */
   double qpc_to_us(const app_t &app, std::int64_t qpc) {
     return static_cast<double>(qpc - app.qpc_start) * 1e6 / static_cast<double>(app.qpc_frequency);
+  }
+
+  /**
+   * @brief Answer clock sync requests until the server is stopped.
+   *
+   * The arrival time is read as soon as the request is received and the reply time just before it is sent, so the
+   * time the host holds a request is left out of the round trip.
+   *
+   * @param server Time server.
+   * @param frequency QueryPerformanceCounter ticks per second.
+   */
+  void serve_time(time_server_t &server, std::int64_t frequency) {
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+    std::uint8_t buffer[64];
+    while (server.running) {
+      sockaddr_in from {};
+      int from_size = sizeof(from);
+      const int received = recvfrom(server.socket, reinterpret_cast<char *>(buffer), sizeof(buffer), 0, reinterpret_cast<sockaddr *>(&from), &from_size);
+      const std::int64_t t2 = qpc_now();
+      if (received == SOCKET_ERROR) {
+        // Closing the socket ends the wait; anything else (such as a reset from an earlier reply) is retried
+        if (!server.running) {
+          break;
+        }
+        continue;
+      }
+      const auto request = latency_test::parse_clock_request(buffer, static_cast<std::size_t>(received));
+      if (!request) {
+        continue;
+      }
+      const auto reply = latency_test::make_clock_reply(*request, t2, qpc_now(), frequency);
+      sendto(server.socket, reinterpret_cast<const char *>(reply.data()), static_cast<int>(reply.size()), 0, reinterpret_cast<const sockaddr *>(&from), from_size);
+      ++server.answered;
+    }
+  }
+
+  /**
+   * @brief Start answering clock sync requests on a UDP port.
+   *
+   * @param server Time server to start.
+   * @param port UDP port.
+   * @param frequency QueryPerformanceCounter ticks per second.
+   * @return Empty on success, otherwise what went wrong.
+   */
+  std::string start_time_server(time_server_t &server, int port, std::int64_t frequency) {
+    WSADATA wsa;
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+      return "WSAStartup failed";
+    }
+    server.winsock = true;
+    server.socket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (server.socket == INVALID_SOCKET) {
+      return std::format("socket failed ({})", WSAGetLastError());
+    }
+    // Without this, a reply to a phone that has gone away fails the next receive with WSAECONNRESET
+    BOOL report_reset = FALSE;
+    DWORD returned = 0;
+    WSAIoctl(server.socket, SIO_UDP_CONNRESET, &report_reset, sizeof(report_reset), nullptr, 0, &returned, nullptr, nullptr);
+
+    sockaddr_in address {};
+    address.sin_family = AF_INET;
+    address.sin_port = htons(static_cast<u_short>(port));
+    address.sin_addr.s_addr = htonl(INADDR_ANY);
+    if (bind(server.socket, reinterpret_cast<const sockaddr *>(&address), sizeof(address)) == SOCKET_ERROR) {
+      const int code = WSAGetLastError();
+      closesocket(server.socket);
+      server.socket = INVALID_SOCKET;
+      return std::format("port {} is in use or blocked ({})", port, code);
+    }
+    server.running = true;
+    server.thread = std::thread(serve_time, std::ref(server), frequency);
+    return {};
+  }
+
+  /**
+   * @brief Stop the time server if it is running.
+   *
+   * @param server Time server.
+   */
+  void stop_time_server(time_server_t &server) {
+    server.running = false;
+    if (server.socket != INVALID_SOCKET) {
+      closesocket(server.socket);
+      server.socket = INVALID_SOCKET;
+    }
+    if (server.thread.joinable()) {
+      server.thread.join();
+    }
+    if (server.winsock) {
+      WSACleanup();
+      server.winsock = false;
+    }
   }
 
   /**
@@ -579,6 +697,26 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
     app.swap_chain->Present(sync_interval, present_flags);
     const std::int64_t presented_qpc = qpc_now();
 
+    if (app.frames_log) {
+      std::fputs(
+        std::format(
+          "{},{:.1f},{:.1f},{:.1f},{}\n",
+          app.frame,
+          qpc_to_us(app, render_qpc),
+          qpc_to_us(app, present_qpc),
+          qpc_to_us(app, presented_qpc),
+          app.shown_seq
+        )
+          .c_str(),
+        app.frames_log
+      );
+      // Flushed about once a second rather than every frame
+      if (presented_qpc - app.frames_flushed_qpc > app.qpc_frequency) {
+        std::fflush(app.frames_log);
+        app.frames_flushed_qpc = presented_qpc;
+      }
+    }
+
     if (answering) {
       const input_event_t event = app.pending.front();
       app.pending.pop_front();
@@ -626,20 +764,21 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
   /**
    * @brief Open the CSV log and write its header.
    *
+   * Both logs start with the same comment lines, so either one can be read on its own.
+   *
    * @param app App state.
    * @param refresh Display refresh rate.
+   * @param time_server How the time server started: "port N", "off" or what went wrong.
    */
-  void open_log(app_t &app, int refresh) {
-    std::wstring path = to_utf16(app.options.log_path);
+  void open_log(app_t &app, int refresh, std::string_view time_server) {
+    std::string path = app.options.log_path;
     if (path.empty()) {
       wchar_t temp[MAX_PATH + 1] {};
       GetTempPathW(MAX_PATH + 1, temp);
-      path = std::wstring(temp) + L"sunshine_latency_test.csv";
+      path = to_utf8(temp) + "sunshine_latency_test.csv";
     }
-    app.log = _wfopen(path.c_str(), L"w");
-    if (!app.log) {
-      return;
-    }
+    app.log = _wfopen(to_utf16(path).c_str(), L"w");
+    app.frames_log = _wfopen(to_utf16(latency_test::frames_log_path(path)).c_str(), L"w");
 
     FILETIME file_time;
     GetSystemTimePreciseAsFileTime(&file_time);
@@ -647,35 +786,53 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
     FileTimeToSystemTime(&file_time, &utc);
     const auto start_ticks = (static_cast<std::uint64_t>(file_time.dwHighDateTime) << 32) | file_time.dwLowDateTime;
 
-    std::fputs(
-      std::format(
-        "# sunshine latency-test\n"
-        "# start_utc={:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z start_filetime={} start_qpc={} qpc_frequency={}\n"
-        "# width={} height={} refresh_hz={} fps={} vsync={} tearing={} noise={}\n"
-        "# Times are microseconds of QueryPerformanceCounter since start_qpc.\n"
-        "seq,source,detail,input_us,render_us,present_call_us,present_return_us,frame,still_queued\n",
-        utc.wYear,
-        utc.wMonth,
-        utc.wDay,
-        utc.wHour,
-        utc.wMinute,
-        utc.wSecond,
-        utc.wMilliseconds,
-        start_ticks,
-        app.qpc_start,
-        app.qpc_frequency,
-        app.width,
-        app.height,
-        refresh,
-        app.options.fps,
-        app.options.vsync,
-        app.tearing,
-        app.options.noise
-      )
-        .c_str(),
-      app.log
+    const std::string header = std::format(
+      "# sunshine latency-test\n"
+      "# start_utc={:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z start_filetime={} start_qpc={} qpc_frequency={}\n"
+      "# width={} height={} refresh_hz={} fps={} vsync={} tearing={} noise={}\n"
+      "# auto={} auto_min_ms={} auto_max_ms={} time_server={}\n"
+      "# Times are microseconds of QueryPerformanceCounter since start_qpc.\n",
+      utc.wYear,
+      utc.wMonth,
+      utc.wDay,
+      utc.wHour,
+      utc.wMinute,
+      utc.wSecond,
+      utc.wMilliseconds,
+      start_ticks,
+      app.qpc_start,
+      app.qpc_frequency,
+      app.width,
+      app.height,
+      refresh,
+      app.options.fps,
+      app.options.vsync,
+      app.tearing,
+      app.options.noise,
+      app.options.auto_flip,
+      app.options.auto_min_ms,
+      app.options.auto_max_ms,
+      time_server
     );
-    std::fflush(app.log);
+    if (app.log) {
+      std::fputs((header + "seq,source,detail,input_us,render_us,present_call_us,present_return_us,frame,still_queued\n").c_str(), app.log);
+      std::fflush(app.log);
+    }
+    if (app.frames_log) {
+      std::fputs((header + "frame,render_us,present_call_us,present_return_us,input_seq\n").c_str(), app.frames_log);
+      std::fflush(app.frames_log);
+    }
+  }
+
+  /**
+   * @brief Pick when the next automatic flip is due.
+   *
+   * @param app App state.
+   * @param now Current QueryPerformanceCounter value.
+   */
+  void schedule_auto_flip(app_t &app, std::int64_t now) {
+    std::uniform_real_distribution<double> interval_ms(app.options.auto_min_ms, app.options.auto_max_ms);
+    app.next_auto_qpc = now + static_cast<std::int64_t>(interval_ms(app.rng) * static_cast<double>(app.qpc_frequency) / 1000);
   }
 
   /**
@@ -745,13 +902,23 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
     if (app.options.fps <= 0) {
       app.options.fps = refresh > 0 ? refresh : 60;
     }
-    open_log(app, refresh);
+    time_server_t time_server;
+    std::string time_server_state = "off";
+    if (app.options.time_port > 0) {
+      const std::string error = start_time_server(time_server, app.options.time_port, app.qpc_frequency);
+      time_server_state = error.empty() ? std::format("port {}", app.options.time_port) : "failed: " + error;
+    }
+    open_log(app, refresh, time_server_state);
 
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
     const HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
 
     const auto period = static_cast<std::int64_t>(static_cast<double>(app.qpc_frequency) / app.options.fps);
     std::int64_t next_frame = qpc_now();
+    app.rng.seed(static_cast<std::uint32_t>(next_frame));
+    if (app.options.auto_flip) {
+      schedule_auto_flip(app, next_frame);
+    }
     while (app.running) {
       MSG msg;
       while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
@@ -768,12 +935,17 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
 
       if (app.resize_pending) {
         if (const HRESULT hr = resize(app); FAILED(hr)) {
+          stop_time_server(time_server);
           return fail("Resizing the swap chain", hr);
         }
       }
 
       // Inputs are answered right away; the background only moves on at the chosen rate.
       const std::int64_t now = qpc_now();
+      if (app.options.auto_flip && now >= app.next_auto_qpc) {
+        queue_input(app, 'a', 0, now);
+        schedule_auto_flip(app, now);
+      }
       const bool frame_due = now >= next_frame;
       if (!app.pending.empty() || frame_due) {
         render(app);
@@ -786,15 +958,20 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
         continue;
       }
 
+      const std::int64_t wake = app.options.auto_flip ? std::min(next_frame, app.next_auto_qpc) : next_frame;
       LARGE_INTEGER due;
-      due.QuadPart = -std::max<std::int64_t>(1, (next_frame - now) * 10'000'000 / app.qpc_frequency);
+      due.QuadPart = -std::max<std::int64_t>(1, (wake - now) * 10'000'000 / app.qpc_frequency);
       SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE);
       MsgWaitForMultipleObjectsEx(1, &timer, INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
     }
 
     CloseHandle(timer);
+    stop_time_server(time_server);
     if (app.log) {
       std::fclose(app.log);
+    }
+    if (app.frames_log) {
+      std::fclose(app.frames_log);
     }
     return 0;
   }

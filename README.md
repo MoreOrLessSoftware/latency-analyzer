@@ -26,7 +26,7 @@ the key press to the trigger being presented.
 | `analyzer/analyze.bat` | Drag and drop wrapper for Windows |
 | `tests/test_pattern.cpp` | Unit tests for the test pattern layout and options |
 | `tests/test_analyzer.py` | Unit tests for the analyzer and report helpers |
-| `analyzer/time_server.py` | Host clock server for Latency Cam |
+| `analyzer/time_server.py` | Stand-alone version of the app's clock sync server, for testing Latency Cam without the app |
 | `android/` | Latency Cam, an Android app that records 240 fps video with every frame timed on the host's clock (see [android/README.md](android/README.md)) |
 
 ## What you need
@@ -64,7 +64,11 @@ GoogleTest at configure time; pass `-DBUILD_TESTS=OFF` to skip them.
    | `--noise <0..1>` | Background noise amplitude, default 0.5. The noise keeps the encoder near its bitrate; 0 turns it off. |
    | `--no-noise` | Flat gray background, so frames stay small (same as `--noise 0`). |
    | `--fps <n>` | Background update rate. The default is the display's refresh rate. |
-   | `--log <path>` | CSV log of each input and the frame that answered it, timed with the host's QPC. The default is `%TEMP%\sunshine_latency_test.csv`. |
+   | `--log <path>` | CSV log of each input and the frame that answered it, timed with the host's QPC. The default is `%TEMP%\sunshine_latency_test.csv`. Every frame's render and present times go to the same name ending `.frames.csv`. |
+   | `--auto` | Flips the trigger on its own every 150–400 ms, at random, as well as on key presses. |
+   | `--auto-interval <min>-<max>` | The interval range for `--auto` in ms, for example `100-300`. Implies `--auto`. |
+   | `--time-port <n>` | UDP port answering Latency Cam's clock sync requests, default 48100. Allow `latency-test.exe` through the firewall when asked. |
+   | `--no-time-server` | Doesn't answer clock sync requests. |
    | `--windowed` | Runs in a 1280x720 window instead of fullscreen. |
 
 2. Stream the app. The screen shows:
