@@ -1424,7 +1424,7 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
     const HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
 
-    std::int64_t period = static_cast<std::int64_t>(static_cast<double>(app.qpc_frequency) / app.options.fps);
+    std::int64_t period = static_cast<std::int64_t>(static_cast<double>(app.qpc_frequency) / latency_test::timer_fps(app.options.fps, app.status.fps_source));
     std::int64_t next_frame = qpc_now();
     app.rng.seed(static_cast<std::uint32_t>(next_frame));
     if (app.options.auto_flip) {
@@ -1470,7 +1470,7 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
       if (app.new_fps) {
         set_fps(app, *app.new_fps);
         app.new_fps.reset();
-        period = static_cast<std::int64_t>(static_cast<double>(app.qpc_frequency) / app.options.fps);
+        period = static_cast<std::int64_t>(static_cast<double>(app.qpc_frequency) / latency_test::timer_fps(app.options.fps, app.status.fps_source));
         next_frame = qpc_now();
       }
 

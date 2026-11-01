@@ -410,6 +410,21 @@ namespace latency_test {
   }
 
   /**
+   * @brief The rate the app's own frame timer runs at.
+   *
+   * Under RTSS's limit the timer runs 5% faster, so RTSS alone sets the pace, as it would for a game. With both aiming
+   * for the same rate, either could make a frame wait, and the times the app calls Present would jitter for no reason
+   * the client could see.
+   *
+   * @param fps The frame rate the app aims for.
+   * @param source Where it came from.
+   * @return The timer's rate in fps.
+   */
+  inline double timer_fps(double fps, fps_source_e source) {
+    return source == fps_source_e::rtss ? fps * 1.05 : fps;
+  }
+
+  /**
    * @brief Read the frame rate limit from one RivaTuner Statistics Server profile.
    *
    * Profiles are INI files; the limit is Limit / LimitDenominator in the [Framerate] section, where 0 means no limit.

@@ -344,6 +344,13 @@ TEST(LatencyTestPatternTest, FpsSourceNames) {
   EXPECT_STREQ(latency_test::fps_source_name(latency_test::fps_source_e::option), "option");
 }
 
+TEST(LatencyTestPatternTest, TimerRunsAheadOfRtss) {
+  // Under RTSS's limit the app's own timer runs a little faster, so RTSS alone sets the pace
+  EXPECT_DOUBLE_EQ(latency_test::timer_fps(97, latency_test::fps_source_e::rtss), 101.85);
+  EXPECT_DOUBLE_EQ(latency_test::timer_fps(97, latency_test::fps_source_e::option), 97);
+  EXPECT_DOUBLE_EQ(latency_test::timer_fps(100, latency_test::fps_source_e::display), 100);
+}
+
 TEST(LatencyTestPatternTest, ReadsRtssProfileLimits) {
   // As RTSS writes them: CRLF lines, the limit as a fraction
   const std::string global = "[OSD]\r\nLimit=5\r\n[Framerate]\r\nLimit=5986\r\nLimitDenominator=100\r\nLimitTime=0\r\n[Hooking]\r\nEnableHooking=1\r\n";

@@ -218,7 +218,9 @@ host present ─▶ capture ─▶ encode ─▶ network ─▶ decode ─▶ cl
 A common way to stream is with v-sync off and a frame limiter such as RivaTuner Statistics Server (RTSS) capping games
 at, or a little under, the client's refresh rate. When RTSS is running and sets a limit for `latency-test.exe` (in its
 own profile, else the global one), the app aims for that rate unless `--fps` is given, and the status band says "RTSS's
-limit". RTSS still applies its limit too, as it would to a game.
+limit". Its own timer then runs 5% faster than the limit, so RTSS alone sets the pace, as it would for a game: with
+both aiming for the same rate, either could make a frame wait, and the host's present times would jitter in a way the
+client never sees.
 
 The test app logs when it calls `Present` and when `Present` returns, and the analysis looks at the time between:
 
