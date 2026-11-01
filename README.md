@@ -25,6 +25,7 @@ the key press to the trigger being presented.
 | `analyzer/report.py` | The HTML report written by `analyze_video.py --report` |
 | `analyzer/analyze.bat` | Drag and drop wrapper for Windows |
 | `tests/test_pattern.cpp` | Unit tests for the test pattern layout and options |
+| `tests/test_analyzer.py` | Unit tests for the analyzer and report helpers |
 
 ## What you need
 
@@ -45,6 +46,7 @@ On Windows, build with MSYS2 UCRT64 (`cmake`, `ninja` and `gcc` from the `mingw-
 cmake -S . -B cmake-build-release -G Ninja -DCMAKE_BUILD_TYPE=Release
 ninja -C cmake-build-release
 cmake-build-release/test_latency.exe
+python -m unittest discover -s tests
 ```
 
 `latency-test.exe` is linked statically, so it can be copied to the host on its own. The unit tests download
@@ -169,11 +171,17 @@ presented figure.
   blur both squares alike, so the halfway points stay comparable. The marker is sampled on the same rows as the
   trigger, so both are scanned out at the same moment.
 - **Groups:** latencies usually cluster one stream frame apart: 8.33 ms at 120 fps, 16.7 ms at 60 fps. The share of
-  presses in each group tells you more than the mean. For example, "26 at 1 frame and 4 at 2 frames" means a
-  frame is sometimes held back somewhere on the path.
-- **Outliers** are presses far from the median of presses with the same edge. A short outlier usually means the
-  marker was drawn late, because the client had no new frame to draw it on. A long outlier is a slow frame
-  somewhere on the path. When most presses are late, the on-time ones get flagged as outliers instead.
+  presses in each group tells you more than the mean. For example, "26 at 1 frame and 4 at 2 frames" means
+  either that a frame is sometimes held back somewhere on the path, or that those presses' markers were presented
+  early. With the marker log, the key press to presented chart tells the two apart.
+- **Key press to presented chart:** with the marker log, each press is a bar from the key press, split into the
+  marker's own delay (orange) and the marker to trigger latency (blue). A press with a short orange part and a
+  long blue part landed at a different point in the stream's frame; only a tall bar overall is a slow press.
+- **Outliers** are presses far from the median of presses with the same edge. With the marker log, they are judged
+  by the time from the key press, so a long outlier is a slow frame somewhere on the path. Presses that only stand
+  out from marker to trigger are listed in a separate note. Without the log, a short outlier usually means the
+  marker was drawn late, because the client had no new frame to draw it on, and a long one is a slow frame. When
+  most presses are late, the on-time ones get flagged as outliers instead.
 - **Marker rise and fall:** the figures split by the direction the marker flipped. If these differ while both
   squares flip the same way, something other than the display is at work.
 - **Edge length** is the display's 10–90 % transition time. It tells you about the panel, not the stream. Long or

@@ -498,6 +498,24 @@ def describe(values):
     )
 
 
+def find_outliers(values, rising):
+    """
+    Values far from the median of the others with the same marker edge, judged separately for each edge because the
+    display's rise and fall times differ. values: one per pair, None to leave a pair out. rising: whether each pair's
+    marker turned white. Returns (index, value, median of its edge) for each outlier, by index.
+    """
+    outliers = []
+    for marker_rising in (True, False):
+        group = [(i, v) for i, (v, r) in enumerate(zip(values, rising)) if v is not None and r == marker_rising]
+        if len(group) < 4:
+            continue
+        group_values = np.array([v for _, v in group])
+        median = float(np.median(group_values))
+        spread = max(3 * 1.4826 * np.median(np.abs(group_values - median)), 1.5)
+        outliers += [(i, v, median) for i, v in group if abs(v - median) > spread]
+    return sorted(outliers)
+
+
 # ---------------------------------------------------------------------------------------------------------------------
 # Moonlight's marker log
 #
@@ -756,17 +774,22 @@ def main():
     # accepted too. A dropped or merged input still shows up as a jump of two or more.
     skipped_seq = [i for i in range(1, len(pairs)) if (pairs[i][2] - pairs[i - 1][2]) % 16 not in (0, 1, 15)]
 
-    # Pairs far from the others with the same edges, e.g. a marker that showed up late because the client had no new
-    # frame to draw it on.
-    outliers = []
-    for marker_rising in (True, False):
-        group = [(i, (h.time - l.time) * 1000) for i, (l, h, _) in enumerate(pairs) if l.rising == marker_rising]
-        if len(group) < 4:
-            continue
-        values = np.array([v for _, v in group])
-        median = np.median(values)
-        spread = max(3 * 1.4826 * np.median(np.abs(values - median)), 1.5)
-        outliers += [(i, v, median) for i, v in group if abs(v - median) > spread]
+    # Pairs far from the others with the same edges. With the marker log, presses are judged by the time from the key
+    # press, which already counts the marker's own delay: a press whose marker was presented early reads an extra
+    # stream frame from marker to trigger without being any slower from the key press.
+    rising_flags = [l.rising for l, _, _ in pairs]
+    stream_outliers = find_outliers(latencies, rising_flags)
+    if pair_logs and sum(log is not None for log in pair_logs) * 2 >= len(pair_logs):
+        totals = [lat + log.present_ms if log else None for lat, log in zip(latencies, pair_logs)]
+        outliers = find_outliers(totals, rising_flags)
+        # Presses missing from the log can only be judged on the marker to trigger latency
+        outliers += [o for o in stream_outliers if pair_logs[o[0]] is None]
+        outliers.sort()
+        flagged = {o[0] for o in outliers}
+        absorbed = [o for o in stream_outliers if pair_logs[o[0]] is not None and o[0] not in flagged]
+        outlier_measure = "key press to presented"
+    else:
+        outliers, absorbed, outlier_measure = stream_outliers, [], "marker to trigger"
 
     # Outputs
     csv_path = stem.with_name(stem.name + ".latency.csv")
@@ -853,9 +876,19 @@ def main():
         notes.append(f"The host's input number jumped at {len(skipped_seq)} pair(s) "
                      f"(e.g. input {skipped_seq[0] + 1}): an input was dropped or two arrived in one frame.")
     if outliers:
-        listed = ", ".join(f"input {i + 1} ({v:.2f} ms vs {m:.2f})" for i, v, m in sorted(outliers))
-        notes.append(f"{len(outliers)} outlier(s): {listed}. A short one usually means the marker was drawn late, "
-                     "because the client had no new frame to draw it on; a long one, a slow frame somewhere on the path.")
+        listed = ", ".join(f"input {i + 1} ({v:.2f} ms vs {m:.2f})" for i, v, m in outliers)
+        if outlier_measure == "key press to presented":
+            notes.append(f"{len(outliers)} outlier(s) in the time from the key press to the trigger being presented: "
+                         f"{listed}. The marker's own delay is already counted, so a long one is a slow frame somewhere "
+                         "on the path, not the client waiting for a frame to draw the marker on.")
+        else:
+            notes.append(f"{len(outliers)} outlier(s): {listed}. A short one usually means the marker was drawn late, "
+                         "because the client had no new frame to draw it on; a long one, a slow frame somewhere on the path.")
+    if absorbed:
+        listed = ", ".join(f"input {i + 1}" for i, _, _ in absorbed)
+        notes.append(f"{len(absorbed)} press(es) stand out from marker to trigger but not from the key press: {listed}. "
+                     "Their marker was presented early or late by about as much, so the press only landed at a "
+                     "different point in the stream's frame and wasn't slower overall.")
     if missed:
         notes.append(f"{len(missed)} marker flips had no trigger flip before the next marker flip, first at "
                      f"{missed[0].time:.3f} s.")

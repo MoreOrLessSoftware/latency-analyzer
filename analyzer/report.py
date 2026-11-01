@@ -92,26 +92,112 @@ def dot_plot(presses, stream_fps):
     return "".join(parts)
 
 
+def nice_step(top_value, max_lines=8):
+    """The smallest of 1, 2, 5, 10, 20... ms that splits 0..top_value into at most max_lines gridlines."""
+    step = 1.0
+    while True:
+        for factor in (1, 2, 5):
+            if top_value / (step * factor) <= max_lines:
+                return step * factor
+        step *= 10
+
+
+def bar_path(x, y_low, y_high, width, radius):
+    """An SVG path for a bar from y_low up to y_high (y_high above it), rounded only at its top end."""
+    radius = max(0.0, min(radius, width / 2, (y_low - y_high) / 2))
+    return (f"M{x:.1f},{y_low:.1f}V{y_high + radius:.1f}Q{x:.1f},{y_high:.1f} {x + radius:.1f},{y_high:.1f}"
+            f"H{x + width - radius:.1f}Q{x + width:.1f},{y_high:.1f} {x + width:.1f},{y_high + radius:.1f}V{y_low:.1f}Z")
+
+
+def stacked_plot(presses, stream_fps):
+    """
+    An SVG of the time from each key press to the trigger being presented, as a bar from the key press split into
+    the marker's logged delay (bottom) and the marker to trigger latency (top). Presses missing from the marker log
+    show the latency alone, faded. The top segment is outlined instead of filled where the marker turned black.
+    """
+    width, height = 760, 300
+    left, right, top, bottom = 44, 64, 14, 34
+    totals = [p["latency"] + (p.get("marker_ms") or 0) for p in presses]
+    logged_totals = [p["latency"] + p["marker_ms"] for p in presses if p.get("marker_ms") is not None]
+    highest = max(totals + [1.0])
+    step = nice_step(highest)
+    top_value = step * (int(highest / step) + 1)
+    count = max(len(presses), 2)
+    slot = (width - left - right) / count
+    bar = max(3.0, min(16.0, slot * 0.6))
+    x_of = lambda i: left + (i - 0.5) * slot
+    y_of = lambda v: top + (1 - v / top_value) * (height - top - bottom)
+    gap = 2  # surface gap between the stacked segments
+
+    parts = [f'<svg class="chart" viewBox="0 0 {width} {height}" role="img" aria-label="Key press to presented for each press">']
+    k = 0
+    while k * step <= top_value + 1e-6:
+        y = y_of(k * step)
+        parts.append(f'<line class="grid" x1="{left}" x2="{width - right}" y1="{y:.1f}" y2="{y:.1f}"/>')
+        parts.append(f'<text class="tick" x="{left - 6}" y="{y + 4:.1f}" text-anchor="end">{k * step:g}</text>')
+        k += 1
+    for i in range(1, len(presses) + 1):
+        if i == 1 or i % 5 == 0:
+            parts.append(f'<text class="tick" x="{x_of(i):.1f}" y="{height - bottom + 16}" text-anchor="middle">{i}</text>')
+    parts.append(f'<text class="tick" x="{left}" y="{height - 4}">press</text>')
+
+    for p in presses:
+        cx = x_of(p["input"])
+        x = cx - bar / 2
+        frames = f' ({p["latency"] / (1000 / stream_fps):.2f} frames)' if stream_fps else ""
+        edge = "marker turned white" if p["rising"] else "marker turned black"
+        marker_ms = p.get("marker_ms")
+        if marker_ms is not None:
+            tip = (f'Press {p["input"]}: key press to presented {p["latency"] + marker_ms:.2f} ms = marker {marker_ms:.2f} '
+                   f'+ marker to trigger {p["latency"]:.2f}{frames}, {edge}')
+            parts.append(f'<g class="hit" data-tip="{html.escape(tip)}">')
+            y0, y1 = y_of(0), y_of(marker_ms)
+            if y0 - y1 > 0.5:
+                parts.append(f'<rect class="seg client" x="{x:.1f}" y="{y1:.1f}" width="{bar:.1f}" height="{y0 - y1:.1f}"/>')
+            low = y1 - gap
+        else:
+            tip = f'Press {p["input"]}: not in the marker log, marker to trigger {p["latency"]:.2f} ms{frames}, {edge}'
+            parts.append(f'<g class="hit unlogged" data-tip="{html.escape(tip)}">')
+            low = y_of(0)
+        high = y_of(p["latency"] + (marker_ms or 0))
+        if p["rising"]:
+            parts.append(f'<path class="seg stream" d="{bar_path(x, low, high, bar, 4)}"/>')
+        else:
+            # Inset by half the stroke so the outline lines up with the filled bars
+            parts.append(f'<path class="seg stream hollow" d="{bar_path(x + 1, low - 1, high + 1, bar - 2, 3)}"/>')
+        parts.append(f'<rect x="{cx - slot / 2:.1f}" y="{top}" width="{slot:.1f}" height="{height - top - bottom}" fill="transparent"/></g>')
+
+    parts.append(f'<line class="axis" x1="{left}" x2="{width - right}" y1="{y_of(0):.1f}" y2="{y_of(0):.1f}"/>')
+    if logged_totals:
+        median = float(np.median(logged_totals))
+        y = y_of(median)
+        parts.append(f'<line class="median" x1="{left}" x2="{width - right}" y1="{y:.1f}" y2="{y:.1f}"/>')
+        parts.append(f'<text class="tick median-label" x="{width - right + 6}" y="{y - 2:.1f}">median</text>'
+                     f'<text class="tick median-label" x="{width - right + 6}" y="{y + 11:.1f}">{median:.1f} ms</text>')
+    parts.append("</svg>")
+    return "".join(parts)
+
+
 STYLE = """
 :root {
   color-scheme: light;
   --bg: #f6f6f4; --surface: #fcfcfb; --border: #e2e1dc;
   --text: #0b0b0b; --text-2: #52514e; --muted: #8a8984;
-  --series: #2a78d6; --grid: #e8e7e3; --warn-bg: #fff6e0; --warn-border: #eda100;
+  --series: #2a78d6; --series-2: #eb6834; --grid: #e8e7e3; --warn-bg: #fff6e0; --warn-border: #eda100;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     color-scheme: dark;
     --bg: #121211; --surface: #1a1a19; --border: #2e2e2c;
     --text: #f0efec; --text-2: #c3c2b7; --muted: #8f8e86;
-    --series: #3987e5; --grid: #2a2a28; --warn-bg: #2b2412; --warn-border: #c98500;
+    --series: #3987e5; --series-2: #d95926; --grid: #2a2a28; --warn-bg: #2b2412; --warn-border: #c98500;
   }
 }
 :root[data-theme="dark"] {
   color-scheme: dark;
   --bg: #121211; --surface: #1a1a19; --border: #2e2e2c;
   --text: #f0efec; --text-2: #c3c2b7; --muted: #8f8e86;
-  --series: #3987e5; --grid: #2a2a28; --warn-bg: #2b2412; --warn-border: #c98500;
+  --series: #3987e5; --series-2: #d95926; --grid: #2a2a28; --warn-bg: #2b2412; --warn-border: #c98500;
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, "Segoe UI", sans-serif; }
@@ -140,6 +226,13 @@ svg .tick.frame { fill: var(--muted); }
 svg .dot { fill: var(--series); }
 svg .dot.hollow { fill: var(--surface); stroke: var(--series); stroke-width: 2; }
 svg .hit:hover .dot { stroke: var(--text); stroke-width: 2; }
+svg .seg.client { fill: var(--series-2); }
+svg .seg.stream { fill: var(--series); }
+svg .seg.stream.hollow { fill: var(--surface); stroke: var(--series); stroke-width: 2; }
+svg .hit.unlogged .seg { opacity: 0.45; }
+svg .hit:hover .seg { filter: brightness(1.15); }
+svg .median { stroke: var(--text-2); stroke-width: 1.5; stroke-dasharray: 5 4; }
+svg .median-label { fill: var(--text); }
 #tip { position: fixed; pointer-events: none; background: var(--text); color: var(--bg); padding: 4px 8px; border-radius: 4px;
        font-size: 13px; display: none; white-space: nowrap; z-index: 10; }
 .note { background: var(--warn-bg); border-left: 3px solid var(--warn-border); padding: 8px 12px; margin: 8px 0; border-radius: 4px; }
@@ -207,7 +300,21 @@ def write_report(path, info, presses, notes, files):
         out.extend(f'<div class="note">{esc(n)}</div>' for n in notes)
 
     if presses:
-        out.append("<h2>Latency of every press, ms</h2>")
+        if logged:
+            unlogged = len(presses) - len(logged)
+            out.append("<h2>Key press to presented, every press, ms</h2>")
+            out.append(f'<div class="card">{stacked_plot(presses, stream_fps)}'
+                       '<p class="legend"><svg width="12" height="12"><rect width="12" height="12" rx="2" fill="var(--series-2)"/></svg> '
+                       'key press to marker presented (marker log) &nbsp; '
+                       '<svg width="12" height="12"><rect width="12" height="12" rx="2" fill="var(--series)"/></svg> '
+                       'marker to trigger &nbsp; '
+                       '<svg width="12" height="12"><rect x="1" y="1" width="10" height="10" rx="2" fill="none" stroke="var(--series)" stroke-width="2"/></svg> '
+                       'marker turned black &nbsp; dashed: median key press to presented'
+                       + (f' &nbsp; faded: {unlogged} press{"es" if unlogged != 1 else ""} not in the marker log, marker to trigger only' if unlogged else "")
+                       + "</p></div>")
+            out.append("<h2>Marker to trigger, every press, ms</h2>")
+        else:
+            out.append("<h2>Latency of every press, ms</h2>")
         out.append(f'<div class="card">{dot_plot(presses, stream_fps)}'
                    '<p class="legend"><svg width="12" height="12"><circle cx="6" cy="6" r="5" fill="var(--series)"/></svg> marker turned white &nbsp; '
                    '<svg width="12" height="12"><circle cx="6" cy="6" r="4" fill="none" stroke="var(--series)" stroke-width="2"/></svg> marker turned black'
