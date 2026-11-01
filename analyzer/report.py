@@ -558,6 +558,42 @@ def write_camera_report(path, info, flips, frames, pacing, notes, files):
     out.append(stats_row("client minus host interval", pacing.mismatch_ms))
     out.append("</tbody></table></div>")
 
+    pipeline = info.get("pipeline")
+    if pipeline and pipeline.stages:
+        logs = [name for name in (pipeline.sunshine_file, pipeline.moonlight_file) if name]
+        out.append("<h2>Pipeline, from " + ("Sunshine&#39;s and Moonlight&#39;s traces" if len(logs) == 2 else
+                                            "Sunshine&#39;s frame log" if pipeline.sunshine_file else "Moonlight&#39;s pacing trace") + "</h2>")
+        legend = (f'{pipeline.joined} of {pipeline.camera_frames} frames followed from the test app through '
+                  f'{" and ".join(esc(name) for name in logs)}. ')
+        if pipeline.moonlight_file:
+            legend += ('Client stages are on Moonlight&#39;s clock, which is offset from the host&#39;s by an unknown amount, '
+                       'so no stage spans both except through the camera. ')
+        if not pipeline.sunshine_file:
+            legend += ('Without Sunshine&#39;s frame log, Moonlight&#39;s rows were matched to the test app&#39;s frames by '
+                       'the pattern of their timing, and the host&#39;s stages are missing. ')
+        if not pipeline.moonlight_file:
+            legend += 'Add Moonlight&#39;s pacing trace for the client&#39;s stages. '
+        out.append(f'<p class="legend">{legend}</p>')
+        out.append('<div class="card"><table><thead><tr><th>Stage</th><th>Source</th><th>n</th><th>median</th><th>sd</th>'
+                   '<th>p10</th><th>p90</th></tr></thead><tbody>')
+        for stage in pipeline.stages:
+            st = stage.stats()
+            out.append(f'<tr><th>{esc(st["label"]).replace("-&gt;", "&rarr;")}</th><td>{esc(st["source"])}</td><td>{st["n"]}</td><td>{st["median"]:.2f}</td>'
+                       f'<td>{st["sd"]:.2f}</td><td>{st["p10"]:.2f}</td><td>{st["p90"]:.2f}</td></tr>')
+        out.append("</tbody></table></div>")
+        checks = pipeline.checks
+        lines = []
+        if "moonlight_capture_to_present_sd_ms" in checks:
+            lines.append(f"Moonlight&#39;s present minus Sunshine&#39;s capture varied by {checks['moonlight_capture_to_present_sd_ms']:.2f} ms "
+                         "(sd): how steady the whole capture to present path was.")
+        for direction in ("white", "black"):
+            key = f"photon_minus_present_sd_to_{direction}_ms"
+            if key in checks:
+                lines.append(f"The camera&#39;s photon minus Moonlight&#39;s present varied by {checks[key]:.2f} ms for frames "
+                             f"turning {direction}: how closely the camera and Moonlight agree on each frame&#39;s timing.")
+        if lines:
+            out.append('<p class="legend">' + "<br>".join(lines) + "</p>")
+
     out.append("<h2>Measurement</h2>")
     rows = [
         ("Video", f'{info["frames"]} frames at {info["fps"]:g} fps, each timed by its sensor timestamp and rolling shutter'),

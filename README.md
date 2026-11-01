@@ -35,6 +35,7 @@ the key press to the trigger being presented.
 | `tests/test_pattern.cpp` | Unit tests for the test pattern layout and options |
 | `tests/test_analyzer.py` | Unit tests for the analyzer and report helpers |
 | `analyzer/camera_mode.py`, `analyzer/camera_timing.py` | Analysis of Latency Cam videos |
+| `analyzer/traces.py` | Joins Latency Cam results with Sunshine's frame log and Moonlight's pacing trace |
 | `tests/test_camera_timing.py`, `tests/synthetic_camera.py` | Tests for it, including an end to end run on a synthetic recording with known latencies |
 | `analyzer/build_exe.ps1`, `analyzer/requirements.txt` | Bundle the analyzer into `latency-analyzer.exe` with PyInstaller |
 | `analyzer/time_server.py` | Stand-alone version of the app's clock sync server, for testing Latency Cam without the app |
@@ -94,6 +95,28 @@ Writes `NAME.flips.csv`, `NAME.frames.csv`, `NAME.regions.png` and, with `--repo
 
 Present to photon includes everything after the present call: the capture wait, encoding, the network, decoding, the
 client's pacing and the display's own delay.
+
+### Breaking it down with Sunshine's and Moonlight's logs
+
+Put Sunshine's `sunshine-frames-*.csv` and Moonlight's `Moonlight-pacing-*.csv` from the filmed run in the recording's
+folder (or pass `--sunshine-frames` and `--moonlight-trace`), and the analysis follows every frame the camera timed
+through them. The report and summary get a **Pipeline** section with each stage's time:
+
+| Stage | From |
+|---|---|
+| app present call → Sunshine capture | the test app and Sunshine, both on the host's QueryPerformanceCounter |
+| capture → encoded, capture → sent | Sunshine |
+| first packet → last packet → decoder hands it over → GPU decode finished → present | Moonlight, on the client's clock |
+| app present → photon, capture → photon | the camera (and Sunshine) |
+
+The client's clock is offset from the host's by an unknown amount, so no single stage spans both. Instead the spreads
+are compared frame by frame: Moonlight's present minus Sunshine's capture shows how steady the whole path was, and the
+camera's photon minus Moonlight's present how closely the camera and Moonlight agree on each frame.
+
+Either log works alone. With only Sunshine's, the client stages are missing. With only Moonlight's, its rows are
+matched to the test app's frames by lining up the frame-to-frame jitter of their timestamps; the host stages are
+missing, and the report warns when the match is uncertain (very even presents leave little to line up). When there
+are several of either, the ones that match the most frames are used.
 
 ### Accuracy
 

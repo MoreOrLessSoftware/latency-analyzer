@@ -715,7 +715,14 @@ def main():
                              "Times every flip and frame on the host's clock instead of against Moonlight's marker")
     parser.add_argument("--host-log", type=Path,
                         help="latency-test.exe's CSV log from the filmed run, for Latency Cam videos "
-                             "(default: sunshine_latency_test.csv in %%TEMP%%)")
+                             "(default: VIDEO.host.csv next to the video, as uploads keep it, else "
+                             "sunshine_latency_test.csv in %%TEMP%%)")
+    parser.add_argument("--sunshine-frames", type=Path,
+                        help="Sunshine's sunshine-frames-*.csv from the filmed run (default: any in the video's or "
+                             "output folder), to break Latency Cam results down by stage")
+    parser.add_argument("--moonlight-trace", type=Path,
+                        help="Moonlight's Moonlight-pacing-*.csv from the filmed run (default: any in the video's or "
+                             "output folder)")
     args = parser.parse_args()
     if not args.video.is_file():
         sys.exit(f"No such file: {args.video}")

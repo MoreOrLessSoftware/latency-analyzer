@@ -44,6 +44,7 @@ install(FILES
         analyzer/report.py
         analyzer/camera_mode.py
         analyzer/camera_timing.py
+        analyzer/traces.py
         analyzer/time_server.py
         analyzer/analyze.bat
         README.md

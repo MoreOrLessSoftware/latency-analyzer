@@ -25,6 +25,7 @@ from camera_timing import (
     patch_turned_white,
     trigger_crossing,
 )
+import traces
 from report import write_camera_report
 
 
@@ -66,7 +67,9 @@ class PhotonClock:
 
 def run(args, timing_path):
     timing = load_camera_timing(timing_path)
-    host_log_path = args.host_log or default_host_log()
+    # The copy kept with an uploaded recording is from the filmed run; the test app's current log may not be
+    kept_log = args.video.with_name(args.video.stem + ".host.csv")
+    host_log_path = args.host_log or (kept_log if kept_log.is_file() else default_host_log())
     if not Path(host_log_path).is_file():
         sys.exit(f"No host log at {host_log_path}. Pass --host-log with the CSV latency-test.exe wrote during the recording.")
     host = load_host_log(host_log_path)
@@ -227,6 +230,15 @@ def run(args, timing_path):
     print(f"  uneven            {pacing.uneven} of {pacing.mismatch_ms.size} intervals off by more than a quarter frame")
 
     notes = [outside_log] if outside_log else []
+
+    # Sunshine's frame log and Moonlight's pacing trace, when they were saved with the recording
+    sunshine_paths, moonlight_paths = traces.find(dict.fromkeys([args.video.parent, out_dir]), args.sunshine_frames, args.moonlight_trace)
+    pipeline = traces.build(frame_rows, host.start_qpc * 1e6 / host.frequency, sunshine_paths, moonlight_paths)
+    if pipeline:
+        print()
+        for line in traces.describe(pipeline):
+            print(line)
+        notes += pipeline.notes
     if fit.min_rtt_ms > 3:
         notes.append(f"The fastest clock sync round trip was {fit.min_rtt_ms:.1f} ms. The sync assumes the request and "
                      "reply took equally long, so every time here could be off by up to half that, the same way for "
@@ -285,6 +297,7 @@ def run(args, timing_path):
         "sync": {"min_rtt_ms": round(fit.min_rtt_ms, 3), "scatter_ms": round(fit.residual_ms, 4), "drift_ppm": round(fit.drift_ppm, 2)},
         "notes": notes,
         "report": stem.name + ".report.html" if args.report else None,
+        "pipeline": pipeline.summary() if pipeline else None,
     }, indent=1))
 
     print()
@@ -304,6 +317,7 @@ def run(args, timing_path):
             "flips_logged": len(host.flips),
             "device": timing.info.get("device", ""),
             "edge_difference": edge_difference,
+            "pipeline": pipeline,
         }
         write_camera_report(report_path, info, flip_rows, frame_rows, pacing, notes,
                             {"flips": flips_csv, "frames": frames_csv, "regions": regions_path})

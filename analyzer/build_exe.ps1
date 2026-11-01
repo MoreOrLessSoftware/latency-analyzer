@@ -41,7 +41,7 @@ Write-Host "Bundling latency-analyzer.exe"
 Invoke-Checked "PyInstaller" {
     & $python -m PyInstaller --noconfirm --log-level WARN --onefile --console --name latency-analyzer `
         --distpath $BuildDir --workpath $work --specpath $work `
-        --paths $here --hidden-import camera_mode --hidden-import camera_timing `
+        --paths $here --hidden-import camera_mode --hidden-import camera_timing --hidden-import traces `
         (Join-Path $here "analyze_video.py")
 }
 Write-Host "Wrote $(Join-Path $BuildDir 'latency-analyzer.exe')"
