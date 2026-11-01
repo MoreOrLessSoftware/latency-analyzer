@@ -23,6 +23,7 @@ from camera_timing import (
     normalize,
     pacing_stats,
     patch_turned_white,
+    present_wait,
     trigger_crossing,
 )
 import traces
@@ -65,20 +66,25 @@ class PhotonClock:
         return float(self.fit.host_seconds(phone_ns)) - self.zero
 
 
+def filmed_frames(host, timing, fit):
+    """The host log's frame rows presented while the recording ran, or all of them when fewer than 3 were."""
+    if len(host.frames) < 3:
+        return host.frames
+    zero = host.start_qpc / host.frequency
+    start = float(fit.host_seconds(timing.starts_ns[0])) - zero
+    end = float(fit.host_seconds(timing.starts_ns[-1])) - zero
+    present = host.frames[:, 2]
+    during = host.frames[(present >= start) & (present <= end)]
+    return during if len(during) >= 3 else host.frames
+
+
 def presented_fps(host, timing, fit):
     """
     The rate the test app presented at while the recording ran, rounded to 0.1 fps, or None when it can't be told.
     """
     if len(host.frames) < 3:
         return None
-    zero = host.start_qpc / host.frequency
-    start = float(fit.host_seconds(timing.starts_ns[0])) - zero
-    end = float(fit.host_seconds(timing.starts_ns[-1])) - zero
-    present = host.frames[:, 2]
-    during = present[(present >= start) & (present <= end)]
-    if during.size < 3:
-        during = present
-    interval = float(np.median(np.diff(during)))
+    interval = float(np.median(np.diff(filmed_frames(host, timing, fit)[:, 2])))
     return round(1 / interval, 1) if interval > 0 else None
 
 
@@ -195,6 +201,8 @@ def run(args, timing_path):
         host.frames[:, 0].astype(np.int64),
     )
 
+    wait = present_wait(filmed_frames(host, timing, fit), host.header)
+
     # Outputs
     flips_csv = stem.with_name(stem.name + ".flips.csv")
     with open(flips_csv, "w", newline="") as f:
@@ -238,6 +246,9 @@ def run(args, timing_path):
     print(f"Clock sync:  {fit.windows} of {fit.samples} exchanges used; fastest round trip {fit.min_rtt_ms:.2f} ms "
           f"(median {fit.median_rtt_ms:.2f}); scatter {fit.residual_ms:.3f} ms; phone clock {fit.drift_ppm:+.1f} ppm against the host's")
     print(f"Flips:       {len(flips)} seen, {len(flip_rows)} matched to the host log ({len(host.flips)} logged)")
+    if wait.wait_ms.size:
+        print(f"Host:        inside Present {describe(wait.wait_ms)}; presenting every {wait.interval_ms:.2f} ms"
+              + (f" at {wait.refresh_hz:g} Hz" if wait.refresh_hz else ""))
     print()
     print("Host present to photon, ms:")
     print(f"  trigger flips  {describe(flip_latencies)}")
@@ -256,6 +267,8 @@ def run(args, timing_path):
     print(f"  uneven            {pacing.uneven} of {pacing.mismatch_ms.size} intervals off by more than a quarter frame")
 
     notes = [outside_log] if outside_log else []
+    if wait.note:
+        notes.append(wait.note)
 
     # Sunshine's frame log and Moonlight's pacing trace, when they were saved with the recording
     sunshine_paths, moonlight_paths = traces.find(dict.fromkeys([args.video.parent, out_dir]), args.sunshine_frames, args.moonlight_trace)
@@ -310,6 +323,8 @@ def run(args, timing_path):
         "frames_to_white": stats(frame_rise),
         "frames_to_black": stats(frame_fall),
         "edge_difference_ms": round(edge_difference, 3),
+        "present_wait": {"inside_present": stats(wait.wait_ms), "interval_ms": round(wait.interval_ms, 3),
+                         "refresh_hz": wait.refresh_hz, "kind": wait.kind},
         "pacing": {
             "mismatch": stats(pacing.mismatch_ms),
             "host_interval": stats(pacing.host_intervals_ms),
@@ -344,6 +359,7 @@ def run(args, timing_path):
             "device": timing.info.get("device", ""),
             "edge_difference": edge_difference,
             "pipeline": pipeline,
+            "present_wait": wait,
         }
         write_camera_report(report_path, info, flip_rows, frame_rows, pacing, notes,
                             {"flips": flips_csv, "frames": frames_csv, "regions": regions_path})

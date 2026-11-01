@@ -24,6 +24,7 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <cmath>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -383,11 +384,108 @@ namespace latency_test {
   }
 
   /**
+   * @brief Where the background frame rate came from.
+   */
+  enum class fps_source_e {
+    display,  ///< The display's refresh rate.
+    rtss,  ///< RivaTuner Statistics Server's frame rate limit.
+    option,  ///< --fps, or typed after F.
+  };
+
+  /**
+   * @brief The name of a frame rate source, as the logs write it.
+   *
+   * @param source The source.
+   * @return "display", "rtss" or "option".
+   */
+  inline const char *fps_source_name(fps_source_e source) {
+    switch (source) {
+      case fps_source_e::display:
+        return "display";
+      case fps_source_e::rtss:
+        return "rtss";
+      default:
+        return "option";
+    }
+  }
+
+  /**
+   * @brief Read the frame rate limit from one RivaTuner Statistics Server profile.
+   *
+   * Profiles are INI files; the limit is Limit / LimitDenominator in the [Framerate] section, where 0 means no limit.
+   * A frame time limit (LimitTime) is not read.
+   *
+   * @param profile The profile file's text.
+   * @return The limit in fps, 0 when the profile sets no limit, or nothing when the profile has no Limit, so another
+   * profile decides.
+   */
+  inline std::optional<double> rtss_profile_limit(std::string_view profile) {
+    std::string_view section;
+    std::optional<double> limit;
+    double denominator = 1;
+    while (!profile.empty()) {
+      const auto end = profile.find('\n');
+      std::string_view line = profile.substr(0, end);
+      profile = end == std::string_view::npos ? std::string_view {} : profile.substr(end + 1);
+      while (!line.empty() && (line.back() == '\r' || line.back() == ' ' || line.back() == '\t')) {
+        line.remove_suffix(1);
+      }
+      while (!line.empty() && (line.front() == ' ' || line.front() == '\t')) {
+        line.remove_prefix(1);
+      }
+      if (line.size() >= 2 && line.front() == '[' && line.back() == ']') {
+        section = line.substr(1, line.size() - 2);
+        continue;
+      }
+      const auto equals = line.find('=');
+      if (section != "Framerate" || equals == std::string_view::npos) {
+        continue;
+      }
+      const std::string_view key = line.substr(0, equals);
+      const std::string_view value = line.substr(equals + 1);
+      double number = 0;
+      if (std::from_chars(value.data(), value.data() + value.size(), number).ec != std::errc {}) {
+        continue;
+      }
+      if (key == "Limit") {
+        limit = number;
+      }
+      else if (key == "LimitDenominator" && number > 0) {
+        denominator = number;
+      }
+    }
+    if (!limit) {
+      return std::nullopt;
+    }
+    return *limit > 0 ? *limit / denominator : 0.0;
+  }
+
+  /**
+   * @brief The frame rate limit RivaTuner Statistics Server applies to an app: its own profile's, else the global one's.
+   *
+   * @param app_profile The app's profile file's text, if it has one.
+   * @param global_profile The global profile file's text, if it could be read.
+   * @return The limit in fps, or nothing when there is none.
+   */
+  inline std::optional<double> rtss_limit(std::optional<std::string_view> app_profile, std::optional<std::string_view> global_profile) {
+    std::optional<double> limit = app_profile ? rtss_profile_limit(*app_profile) : std::nullopt;
+    if (!limit && global_profile) {
+      limit = rtss_profile_limit(*global_profile);
+    }
+    if (!limit || *limit <= 0) {
+      return std::nullopt;
+    }
+    return limit;
+  }
+
+  /**
    * @brief What the status line in the info band describes.
    */
   struct status_t {
     double fps = 0;  ///< Background frame rate in use.
-    bool fps_from_display = true;  ///< Whether fps came from the display's refresh rate rather than --fps.
+    fps_source_e fps_source = fps_source_e::display;  ///< Where fps came from.
+    fps_source_e default_source = fps_source_e::display;  ///< Where the frame rate comes from when none is set.
+    double present_wait_ms = 0;  ///< Mean time Present held the app over the last second.
     int refresh_hz = 0;  ///< Display refresh rate; 0 when unknown.
     bool vsync = false;  ///< Whether presents wait for vertical blank.
     bool tearing = false;  ///< Whether presents may tear (only without v-sync).
@@ -504,10 +602,13 @@ namespace latency_test {
       const auto [end, error] = std::to_chars(buffer, buffer + sizeof(buffer), value, std::chars_format::fixed, value == static_cast<int>(value) ? 0 : 1);
       return std::string(buffer, end);
     };
-    std::string text = number(status.fps) + " fps" + (status.fps_from_display ? " (the display's refresh, F sets)" : " (F sets)");
+    const auto source = [](fps_source_e source) {
+      return source == fps_source_e::display ? "the display's refresh" : source == fps_source_e::rtss ? "RTSS's limit" : "";
+    };
+    std::string text = number(status.fps) + " fps" + (status.fps_source == fps_source_e::option ? std::string(" (F sets)") : std::string(" (") + source(status.fps_source) + ", F sets)");
     text += status.refresh_hz > 0 ? " \xC2\xB7 display " + std::to_string(status.refresh_hz) + " Hz" : " \xC2\xB7 display rate unknown";
     if (status.vsync) {
-      text += status.fps_from_display ? " \xC2\xB7 v-sync on, paced by the display" : " \xC2\xB7 v-sync on";
+      text += status.fps_source == fps_source_e::display ? " \xC2\xB7 v-sync on, paced by the display" : " \xC2\xB7 v-sync on";
     }
     else {
       text += status.tearing ? " \xC2\xB7 v-sync off, tearing" : " \xC2\xB7 v-sync off (no tearing support)";
@@ -516,11 +617,11 @@ namespace latency_test {
     if (status.entering_fps) {
       // The second line becomes the prompt while a frame rate is typed
       text += "New frame rate: " + status.fps_entry + "_";
-      text += status.fps_entry_invalid ? " \xC2\xB7 must be 1 to 1000" : " \xC2\xB7 Enter applies (empty: the display's refresh)";
+      text += status.fps_entry_invalid ? " \xC2\xB7 must be 1 to 1000" : std::string(" \xC2\xB7 Enter applies (empty: ") + source(status.default_source) + ")";
       text += " \xC2\xB7 Esc cancels";
       return text;
     }
-    text += status.measured_fps > 0 ? "presenting " + number(status.measured_fps) + " fps" : "presenting \xE2\x80\xA6";
+    text += status.measured_fps > 0 ? "presenting " + number(status.measured_fps) + " fps, " + number(std::round(status.present_wait_ms * 10) / 10) + " ms in Present" : "presenting \xE2\x80\xA6";
     text += status.auto_flip ? " \xC2\xB7 auto flips every " + number(status.auto_min_ms) + "\xE2\x80\x93" + number(status.auto_max_ms) + " ms" : " \xC2\xB7 auto flips off";
     text += " (A toggles)";
     text += status.latency_cam_port > 0 ? " \xC2\xB7 Latency Cam port " + std::to_string(status.latency_cam_port) : " \xC2\xB7 Latency Cam off";

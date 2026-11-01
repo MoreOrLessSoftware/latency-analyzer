@@ -398,6 +398,12 @@ def write_camera_report(path, info, flips, frames, pacing, notes, files):
         ("Frames", f'{pacing.frames_seen} seen of {pacing.frames_presented} presented while filming; '
                    f'{pacing.mismatch_ms.size} consecutive pairs'),
     ]
+    wait = info.get("present_wait")
+    if wait is not None and wait.wait_ms.size:
+        rows.append(("Inside Present", f'median {np.median(wait.wait_ms):.2f} ms per frame, presenting every '
+                                       f'{wait.interval_ms:.2f} ms' + (f' at {wait.refresh_hz:g} Hz' if wait.refresh_hz else '')
+                                       + {"none": "", "vsync": " (v-sync)", "queue": " (frames queuing: see the notes)",
+                                          "limiter": " (a frame limiter: see the notes)"}[wait.kind]))
     out.append('<div class="card"><dl>' + "".join(f"<dt>{k}</dt><dd>{v}</dd>" for k, v in rows) + "</dl></div>")
     legend = ('Host present &rarr; photon runs from the game (the test app) handing its frame to Windows on the host '
               'to the client display showing the change: the capture wait, encoding, the network, decoding, the '

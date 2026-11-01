@@ -282,16 +282,17 @@ TEST(LatencyTestPatternTest, StatusTextDescribesPresentation) {
   status.refresh_hz = 120;
   status.tearing = true;
   status.measured_fps = 119.84;
+  status.present_wait_ms = 0.04;
   status.auto_flip = true;
   status.auto_min_ms = 150;
   status.auto_max_ms = 400;
   status.latency_cam_port = 48100;
   EXPECT_EQ(latency_test::status_text(status),
             "120 fps (the display's refresh, F sets) \xC2\xB7 display 120 Hz \xC2\xB7 v-sync off, tearing (V toggles)\n"
-            "presenting 119.8 fps \xC2\xB7 auto flips every 150\xE2\x80\x93" "400 ms (A toggles) \xC2\xB7 Latency Cam port 48100");
+            "presenting 119.8 fps, 0 ms in Present \xC2\xB7 auto flips every 150\xE2\x80\x93" "400 ms (A toggles) \xC2\xB7 Latency Cam port 48100");
 
   status.fps = 117.5;
-  status.fps_from_display = false;
+  status.fps_source = latency_test::fps_source_e::option;
   status.refresh_hz = 0;
   status.vsync = true;
   status.measured_fps = 0;
@@ -311,12 +312,62 @@ TEST(LatencyTestPatternTest, StatusTextDescribesPresentation) {
   status.fps_entry_invalid = false;
 
   // At the display's own rate, v-sync lets the display set the pace
-  status.fps_from_display = true;
+  status.fps_source = latency_test::fps_source_e::display;
   EXPECT_NE(latency_test::status_text(status).find("v-sync on, paced by the display (V toggles)"), std::string::npos);
 
   status.vsync = false;
   status.tearing = false;
   EXPECT_NE(latency_test::status_text(status).find("v-sync off (no tearing support)"), std::string::npos);
+}
+
+TEST(LatencyTestPatternTest, StatusTextNamesRtssAndTheTimeInPresent) {
+  latency_test::status_t status;
+  status.fps = 97;
+  status.fps_source = latency_test::fps_source_e::rtss;
+  status.default_source = latency_test::fps_source_e::rtss;
+  status.refresh_hz = 100;
+  status.tearing = true;
+  status.measured_fps = 97;
+  status.present_wait_ms = 10.19;
+  const std::string text = latency_test::status_text(status);
+  EXPECT_EQ(text.substr(0, text.find(" \xC2\xB7")), "97 fps (RTSS's limit, F sets)");
+  EXPECT_NE(text.find("\npresenting 97 fps, 10.2 ms in Present"), std::string::npos);
+
+  // An empty entry goes back to RTSS's limit
+  status.entering_fps = true;
+  EXPECT_NE(latency_test::status_text(status).find("Enter applies (empty: RTSS's limit)"), std::string::npos);
+}
+
+TEST(LatencyTestPatternTest, FpsSourceNames) {
+  EXPECT_STREQ(latency_test::fps_source_name(latency_test::fps_source_e::display), "display");
+  EXPECT_STREQ(latency_test::fps_source_name(latency_test::fps_source_e::rtss), "rtss");
+  EXPECT_STREQ(latency_test::fps_source_name(latency_test::fps_source_e::option), "option");
+}
+
+TEST(LatencyTestPatternTest, ReadsRtssProfileLimits) {
+  // As RTSS writes them: CRLF lines, the limit as a fraction
+  const std::string global = "[OSD]\r\nLimit=5\r\n[Framerate]\r\nLimit=5986\r\nLimitDenominator=100\r\nLimitTime=0\r\n[Hooking]\r\nEnableHooking=1\r\n";
+  ASSERT_TRUE(latency_test::rtss_profile_limit(global));
+  EXPECT_DOUBLE_EQ(*latency_test::rtss_profile_limit(global), 59.86);
+  EXPECT_DOUBLE_EQ(*latency_test::rtss_profile_limit("[Framerate]\nLimit=97\nLimitDenominator=1\n"), 97);
+  // Spaces, a zero denominator and junk are tolerated
+  EXPECT_DOUBLE_EQ(*latency_test::rtss_profile_limit("  [Framerate]  \n Limit=120\t\nLimitDenominator=0\nNote\nSyncLimiter=x\n"), 120);
+  // No limit, and no say at all
+  EXPECT_EQ(latency_test::rtss_profile_limit("[Framerate]\nLimit=0\nLimitDenominator=1"), 0.0);
+  EXPECT_FALSE(latency_test::rtss_profile_limit("[OSD]\nLimit=97\n"));
+  EXPECT_FALSE(latency_test::rtss_profile_limit("[Framerate]\nLimit=abc\n"));
+  EXPECT_FALSE(latency_test::rtss_profile_limit(""));
+}
+
+TEST(LatencyTestPatternTest, AppProfileOverridesTheGlobalRtssLimit) {
+  const std::string_view global = "[Framerate]\nLimit=97\n";
+  EXPECT_EQ(latency_test::rtss_limit(std::nullopt, global), 97.0);
+  EXPECT_EQ(latency_test::rtss_limit("[Framerate]\nLimit=117\n", global), 117.0);
+  // An app profile with no limit turns it off for the app; one without the setting leaves it to the global profile
+  EXPECT_FALSE(latency_test::rtss_limit("[Framerate]\nLimit=0\n", global));
+  EXPECT_EQ(latency_test::rtss_limit("[OSD]\nEnableOSD=1\n", global), 97.0);
+  EXPECT_FALSE(latency_test::rtss_limit(std::nullopt, "[Framerate]\nLimit=0\n"));
+  EXPECT_FALSE(latency_test::rtss_limit(std::nullopt, std::nullopt));
 }
 
 TEST(LatencyTestPatternTest, FpsEntryTypesAppliesAndCancels) {

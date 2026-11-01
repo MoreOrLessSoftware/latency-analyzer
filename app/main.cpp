@@ -34,6 +34,7 @@
 #include <shlobj.h>
 #include <commctrl.h>
 #include <windows.h>
+#include <tlhelp32.h>
 #include <wrl/client.h>
 
 // standard includes
@@ -41,6 +42,9 @@
 #include <cstdio>
 #include <deque>
 #include <format>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <optional>
 #include <random>
 #include <thread>
@@ -254,6 +258,8 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
     std::wstring status_text;  ///< The status text as drawn.
     std::int64_t rate_window_qpc = 0;  ///< Start of the second the presented frame rate is counted over.
     std::uint32_t rate_frames = 0;  ///< Frames presented so far in that second.
+    std::int64_t rate_wait_qpc = 0;  ///< Time spent inside Present so far in that second.
+    std::optional<double> rtss_fps;  ///< RivaTuner Statistics Server's frame rate limit for this app, if it runs one.
 
     std::deque<input_event_t> pending;  ///< Inputs not answered yet.
     std::uint32_t next_seq = 1;  ///< Sequence number for the next input.
@@ -738,20 +744,25 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
    * @brief Count presented frames and refresh the status text once a second.
    *
    * @param app App state.
+   * @param present_qpc When Present was called for the frame just presented.
    * @param presented_qpc When the frame just presented returned from Present.
    */
-  void update_status(app_t &app, std::int64_t presented_qpc) {
+  void update_status(app_t &app, std::int64_t present_qpc, std::int64_t presented_qpc) {
     ++app.rate_frames;
+    app.rate_wait_qpc += presented_qpc - present_qpc;
     if (app.rate_window_qpc == 0) {
       app.rate_window_qpc = presented_qpc;
       app.rate_frames = 0;
+      app.rate_wait_qpc = 0;
     }
     const std::int64_t elapsed = presented_qpc - app.rate_window_qpc;
     if (elapsed >= app.qpc_frequency || app.status_text.empty()) {
       if (elapsed >= app.qpc_frequency) {
         app.status.measured_fps = app.rate_frames * static_cast<double>(app.qpc_frequency) / static_cast<double>(elapsed);
+        app.status.present_wait_ms = app.rate_frames ? app.rate_wait_qpc * 1000.0 / static_cast<double>(app.qpc_frequency) / app.rate_frames : 0;
         app.rate_window_qpc = presented_qpc;
         app.rate_frames = 0;
+        app.rate_wait_qpc = 0;
       }
       app.status.entering_fps = app.fps_entry.active;
       app.status.fps_entry = app.fps_entry.text;
@@ -839,7 +850,7 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
     const std::int64_t present_qpc = qpc_now();
     app.swap_chain->Present(sync_interval, present_flags);
     const std::int64_t presented_qpc = qpc_now();
-    update_status(app, presented_qpc);
+    update_status(app, present_qpc, presented_qpc);
 
     if (app.frames_log) {
       std::fputs(
@@ -889,6 +900,70 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
   }
 
   /**
+   * @brief Read a whole file.
+   *
+   * @param path File to read.
+   * @return Its contents, or nothing when it can't be read.
+   */
+  std::optional<std::string> read_file(const std::wstring &path) {
+    std::ifstream file(std::filesystem::path(path), std::ios::binary);
+    if (!file) {
+      return std::nullopt;
+    }
+    return std::string(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+  }
+
+  /**
+   * @brief Whether a process with this executable name is running.
+   *
+   * @param name Executable file name, such as RTSS.exe.
+   * @return True when one is.
+   */
+  bool process_running(const wchar_t *name) {
+    const HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) {
+      return false;
+    }
+    PROCESSENTRY32W entry {};
+    entry.dwSize = sizeof(entry);
+    bool found = false;
+    for (BOOL more = Process32FirstW(snapshot, &entry); more && !found; more = Process32NextW(snapshot, &entry)) {
+      found = _wcsicmp(entry.szExeFile, name) == 0;
+    }
+    CloseHandle(snapshot);
+    return found;
+  }
+
+  /**
+   * @brief The frame rate limit RivaTuner Statistics Server applies to this app, read from its profiles.
+   *
+   * RTSS keeps its settings in INI files in its Profiles folder: one per app (named after the executable) and a global
+   * one for the rest. Only counts while RTSS is running.
+   *
+   * @return The limit in fps, or nothing when RTSS isn't running or sets no limit.
+   */
+  std::optional<double> read_rtss_limit() {
+    if (!process_running(L"RTSS.exe")) {
+      return std::nullopt;
+    }
+    wchar_t dir[MAX_PATH] {};
+    DWORD size = sizeof(dir);
+    if (RegGetValueW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\WOW6432Node\\Unwinder\\RTSS", L"InstallDir", RRF_RT_REG_SZ, nullptr, dir, &size) != ERROR_SUCCESS) {
+      return std::nullopt;
+    }
+    const std::wstring profiles = std::wstring(dir) + L"\\Profiles\\";
+    wchar_t exe[MAX_PATH] {};
+    GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    const wchar_t *name = wcsrchr(exe, L'\\');
+    const auto app_profile = read_file(profiles + (name ? name + 1 : exe) + L".cfg");
+    const auto global_profile = read_file(profiles + L"Global");
+    return latency_test::rtss_limit(
+      app_profile ? std::optional<std::string_view>(*app_profile) : std::nullopt,
+      global_profile ? std::optional<std::string_view>(*global_profile) : std::nullopt
+    );
+  }
+
+  /**
    * @brief Get the refresh rate of the monitor a window is on.
    *
    * @param hwnd Window.
@@ -935,7 +1010,7 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
     const std::string header = std::format(
       "# latency-test\n"
       "# start_utc={:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z start_filetime={} start_qpc={} qpc_frequency={}\n"
-      "# width={} height={} refresh_hz={} fps={} vsync={} tearing={} noise={}\n"
+      "# width={} height={} refresh_hz={} fps={} fps_source={} rtss_limit={} vsync={} tearing={} noise={}\n"
       "# auto={} auto_min_ms={} auto_max_ms={} time_server={}\n"
       "# Times are microseconds of QueryPerformanceCounter since start_qpc.\n",
       utc.wYear,
@@ -952,6 +1027,8 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
       app.height,
       refresh,
       app.options.fps,
+      latency_test::fps_source_name(app.status.fps_source),
+      app.rtss_fps.value_or(0),
       app.options.vsync,
       app.tearing,
       app.options.noise,
@@ -1062,17 +1139,17 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
    * @brief Change the background frame rate, and note the change in both logs and on screen.
    *
    * @param app App state.
-   * @param fps New frame rate, or 0 to follow the display's refresh rate again.
+   * @param fps New frame rate, or 0 to go back to the default: RTSS's limit, else the display's refresh rate.
    */
   void set_fps(app_t &app, double fps) {
-    app.status.fps_from_display = fps <= 0;
-    app.options.fps = fps > 0 ? fps : (app.status.refresh_hz > 0 ? app.status.refresh_hz : 60);
+    app.status.fps_source = fps > 0 ? latency_test::fps_source_e::option : app.status.default_source;
+    app.options.fps = fps > 0 ? fps : app.rtss_fps ? *app.rtss_fps : (app.status.refresh_hz > 0 ? app.status.refresh_hz : 60);
     app.status.fps = app.options.fps;
     // Count the presented rate afresh, and redraw the text on the next frame
     app.rate_window_qpc = 0;
     app.status.measured_fps = 0;
     app.status_text.clear();
-    const std::string note = std::format("# fps={} from frame {}\n", app.options.fps, app.frame);
+    const std::string note = std::format("# fps={} fps_source={} from frame {}\n", app.options.fps, latency_test::fps_source_name(app.status.fps_source), app.frame);
     for (std::FILE *log : {app.log, app.frames_log}) {
       if (log) {
         std::fputs(note.c_str(), log);
@@ -1294,9 +1371,12 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
     SetForegroundWindow(app.hwnd);
 
     const int refresh = refresh_rate(app.hwnd);
-    app.status.fps_from_display = app.options.fps <= 0;
+    // Without --fps, follow RTSS's frame rate limit when it sets one, as a game would run under it, else the display
+    app.rtss_fps = read_rtss_limit();
+    app.status.default_source = app.rtss_fps ? latency_test::fps_source_e::rtss : latency_test::fps_source_e::display;
+    app.status.fps_source = app.options.fps > 0 ? latency_test::fps_source_e::option : app.status.default_source;
     if (app.options.fps <= 0) {
-      app.options.fps = refresh > 0 ? refresh : 60;
+      app.options.fps = app.rtss_fps ? *app.rtss_fps : (refresh > 0 ? refresh : 60);
     }
     app.status.fps = app.options.fps;
     app.status.refresh_hz = refresh;
@@ -1397,7 +1477,7 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
       // Inputs are answered right away; the background only moves on at the chosen rate. With v-sync at the
       // display's own rate, Present sets the pace instead: it blocks until the display takes the last frame.
       const std::int64_t now = qpc_now();
-      const bool paced_by_display = app.options.vsync && app.status.fps_from_display;
+      const bool paced_by_display = app.options.vsync && app.status.fps_source == latency_test::fps_source_e::display;
       const bool frame_due = paced_by_display || now >= next_frame;
       // An automatic flip waits for the next scheduled frame instead of adding one, so the cadence stays steady
       if (frame_due && app.options.auto_flip && now >= app.next_auto_qpc) {

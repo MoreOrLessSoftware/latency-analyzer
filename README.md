@@ -90,7 +90,7 @@ pass `--results`.
 | `--vsync` | Starts with v-sync on: waits for vertical blank. By default the app presents straight away, with tearing, so it adds no wait of its own. **V** toggles it while running. |
 | `--noise <0..1>` | Background noise amplitude, default 0.5. The noise keeps the encoder near its bitrate; 0 turns it off. |
 | `--no-noise` | Flat gray background, so frames stay small (same as `--noise 0`). |
-| `--fps <n>` | Background update rate. The default is the display's refresh rate. **F** changes it while running. |
+| `--fps <n>` | Background update rate. The default is [RTSS's frame rate limit](#frame-limiters-and-rtss) when RivaTuner Statistics Server is running and sets one for the app, else the display's refresh rate. **F** changes it while running. |
 | `--log <path>` | CSV log of each flip, timed with the host's QPC. The default is `%TEMP%\latency_test.csv`. Every frame's render and present times go to the same name ending `.frames.csv`. |
 | `--no-auto` | Starts without automatic flips. By default the trigger flips on its own every 150–400 ms, at random, as well as on key presses; automatic flips land on the next scheduled frame, so the frame rate stays steady. **A** toggles them while running. |
 | `--auto-interval <min>-<max>` | The interval range for automatic flips in ms, for example `100-300`. |
@@ -108,11 +108,11 @@ The screen shows:
 - a bullseye in each corner
 - a readout band at the bottom with the host clock and the time since the last flip
 - a status band at the top: the frame rate the app aims for and where it came from, the display's refresh rate,
-  v-sync or tearing, the frame rate actually presented over the last second, the automatic flips and the Latency Cam
-  port
+  v-sync or tearing, the frame rate actually presented over the last second and how long `Present` held the app on
+  average, the automatic flips and the Latency Cam port
 
-By default the app presents without v-sync, with tearing. It redraws the background on a timer at `--fps`, or at the
-display's refresh rate without it. A key press is answered straight away with an extra frame; automatic flips are
+By default the app presents without v-sync, with tearing. It redraws the background on a timer at `--fps`, or without it at
+RTSS's limit or the display's refresh rate. A key press is answered straight away with an extra frame; automatic flips are
 shown on the next scheduled frame instead, which keeps the cadence steady for measuring pacing.
 
 Keys, on the host or through the stream; none of them counts as a flip, and each change is noted in both logs
@@ -122,7 +122,7 @@ Keys, on the host or through the stream; none of them counts as a flip, and each
 |---|---|
 | **A** | Toggles automatic flips. |
 | **V** | Toggles v-sync. With v-sync on and no `--fps`, the display sets the pace: each present waits for the display to take the previous frame, so frames follow its refresh instead of the app's timer. That adds about a frame of latency. Each frame's line in `.frames.csv` records whether v-sync was on. |
-| **F** | Types a new frame rate in the status band: digits, `.` and Backspace edit it, Enter applies it (nothing typed goes back to the display's refresh rate) and Esc cancels. A rate a little under the display's maximum, such as 97 at 100 Hz, keeps a VRR display following the app's frames. |
+| **F** | Types a new frame rate in the status band: digits, `.` and Backspace edit it, Enter applies it (nothing typed goes back to the default: RTSS's limit or the display's refresh rate) and Esc cancels. A rate a little under the display's maximum, such as 97 at 100 Hz, keeps a VRR display following the app's frames. |
 | **Esc** | Quits (or cancels typing a frame rate). While Latency Cam is uploading, an analysis is running or the phone hasn't downloaded the report yet, the test pattern closes and a small window shows the progress; it closes by itself, and the app with it, when everything is done (it gives the phone up to 15 s to start an analysis or download a report). **Close anyway** quits at once: an analysis then carries on in the background and still saves its report on the host, but the phone can't fetch it. |
 
 ## Measure
@@ -210,6 +210,28 @@ host present ─▶ capture ─▶ encode ─▶ network ─▶ decode ─▶ cl
 - **At the display's maximum refresh rate,** VRR can't follow the app's frames, so each frame waits for the display's
   scan to come round, and the result depends on where in the scan the app's timer happens to land. Run a little under
   it (F, then 97 at 100 Hz) to measure with VRR in play.
+- **Inside Present:** how long the test app's `Present` call took. It returns at once unless something holds it, and
+  the report explains when something did (see below).
+
+### Frame limiters and RTSS
+
+A common way to stream is with v-sync off and a frame limiter such as RivaTuner Statistics Server (RTSS) capping games
+at, or a little under, the client's refresh rate. When RTSS is running and sets a limit for `latency-test.exe` (in its
+own profile, else the global one), the app aims for that rate unless `--fps` is given, and the status band says "RTSS's
+limit". RTSS still applies its limit too, as it would to a game.
+
+The test app logs when it calls `Present` and when `Present` returns, and the analysis looks at the time between:
+
+- **Close to a whole frame, presenting at the display's refresh rate, v-sync off:** frames are queuing on the host. The
+  app makes frames a hair faster than the display takes them, so the frames waiting to be shown fill up and every
+  new frame waits behind them, adding a frame or two to every latency. A game running uncapped at the refresh rate
+  does the same; capping a little below the refresh rate avoids it. In one test at 100 Hz, host present → photon was
+  40 ms uncapped and 21 ms capped to 97 fps.
+- **Close to a whole frame, below the refresh rate:** a frame limiter is holding the app. RTSS waits inside the app's
+  `Present`. Host present times are when the app called `Present`; in RTSS's default mode the frame is handed on
+  before the wait, so the wait isn't counted (timing from `Present`'s return instead would read less than the capture
+  → photon time, which can't be).
+- **With v-sync on,** each `Present` waits for the display, and that wait is part of the latency, as in a game.
 
 ### Optional: breaking it down by stage
 

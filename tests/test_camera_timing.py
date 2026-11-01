@@ -28,6 +28,7 @@ from camera_timing import (  # noqa: E402
     match_trigger_flips,
     pacing_stats,
     patch_turned_white,
+    present_wait,
     refine_crossing,
 )
 
@@ -133,6 +134,45 @@ class HostLogTest(unittest.TestCase):
             (Path(d) / "x.csv").write_text("a,b\n1,2\n")
             with self.assertRaises(ValueError):
                 load_host_log(Path(d) / "x.csv")
+
+
+class PresentWaitTest(unittest.TestCase):
+    @staticmethod
+    def frames(interval_ms, wait_ms, n=50):
+        """Host frame rows presenting every interval_ms, each held wait_ms inside Present."""
+        calls = np.arange(n) * interval_ms / 1000
+        return np.column_stack([np.arange(n), calls - 0.0001, calls, calls + wait_ms / 1000, np.zeros(n)])
+
+    def test_says_nothing_when_present_returns_at_once(self):
+        wait = present_wait(self.frames(10.3, 0.1), {"refresh_hz": "100"})
+        self.assertEqual((wait.kind, wait.note), ("none", ""))
+        self.assertAlmostEqual(wait.interval_ms, 10.3)
+        self.assertAlmostEqual(float(np.median(wait.wait_ms)), 0.1)
+
+    def test_warns_of_frames_queuing_at_the_refresh_rate(self):
+        wait = present_wait(self.frames(10.009, 9.86), {"refresh_hz": "100", "vsync": "false"})
+        self.assertEqual(wait.kind, "queue")
+        self.assertIn("Frames were queuing on the host", wait.note)
+        self.assertIn("(100 Hz)", wait.note)
+
+    def test_names_a_frame_limiter_below_the_refresh_rate(self):
+        wait = present_wait(self.frames(10.309, 10.2), {"refresh_hz": "100", "fps_source": "rtss"})
+        self.assertEqual(wait.kind, "limiter")
+        self.assertIn("at 97.0 fps, below the display's 100 Hz", wait.note)
+        self.assertIn("RTSS's frame rate limit", wait.note)
+        # Without knowing the limit came from RTSS, or the display's rate
+        wait = present_wait(self.frames(10.309, 10.2), {"refresh_hz": "?"})
+        self.assertEqual(wait.refresh_hz, 0)
+        self.assertIn("at 97.0 fps: most likely a frame limiter such as RTSS", wait.note)
+
+    def test_explains_vsync(self):
+        wait = present_wait(self.frames(10.0, 9.5), {"refresh_hz": "100", "vsync": "1"})
+        self.assertEqual(wait.kind, "vsync")
+        self.assertIn("v-sync was on", wait.note)
+
+    def test_copes_with_too_few_frames(self):
+        self.assertEqual(present_wait(np.zeros((0, 5)), {}).kind, "none")
+        self.assertEqual(present_wait(self.frames(10, 9, n=2), {}).kind, "none")
 
 
 class MatchingTest(unittest.TestCase):

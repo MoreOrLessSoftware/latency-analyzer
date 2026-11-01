@@ -252,6 +252,55 @@ def load_host_log(log_path):
     )
 
 
+@dataclass
+class PresentWait:
+    """How long the test app spent inside Present, and what that says about the host."""
+    wait_ms: np.ndarray  # per frame: Present's return minus its call
+    interval_ms: float  # median time between presents
+    refresh_hz: float  # the host display's refresh rate; 0 when unknown
+    kind: str  # "none", "vsync", "queue" or "limiter"
+    note: str  # an explanation for the report, or "" when there is nothing to say
+
+
+def present_wait(frames, header):
+    """
+    Judge the time the test app spent inside Present. frames: host log frame rows (frame, render, present call,
+    present return, input seq) from the filmed span. header: the host log's header.
+
+    Present returns at once unless something holds it: v-sync, a full queue of frames waiting for the display, or a
+    frame limiter such as RTSS, which waits inside the app's Present call.
+    """
+    frames = np.asarray(frames, dtype=np.float64).reshape(-1, 5)
+    wait = (frames[:, 3] - frames[:, 2]) * 1000
+    interval = float(np.median(np.diff(frames[:, 2]))) * 1000 if len(frames) > 2 else 0.0
+    try:
+        refresh = float(header.get("refresh_hz", 0))
+    except ValueError:
+        refresh = 0.0
+    median = float(np.median(wait)) if wait.size else 0.0
+    if wait.size == 0 or interval <= 0 or median < interval / 2:
+        return PresentWait(wait, interval, refresh, "none", "")
+    held = f"Present held the test app for {median:.1f} ms of every {interval:.1f} ms frame"
+    if header.get("vsync") in ("1", "true"):
+        return PresentWait(wait, interval, refresh, "vsync",
+                           f"{held}: v-sync was on, so each present waited for the display. That wait is counted in "
+                           "the host present times here, as it would be in a game with v-sync on.")
+    if refresh > 0 and abs(interval - 1000 / refresh) < 1000 / refresh * 0.015:
+        return PresentWait(wait, interval, refresh, "queue",
+                           f"Frames were queuing on the host. {held} while presenting at the display's refresh rate "
+                           f"({refresh:g} Hz): the test app made frames a little faster than the display took them, "
+                           "so each one waited behind frames already queued, adding up to a frame or two to every "
+                           "latency here. A game running uncapped at the refresh rate with v-sync off does the same. "
+                           "Cap the frame rate a little below the refresh rate (F, or a limiter such as RTSS) to "
+                           "measure without it.")
+    limiter = "RTSS's frame rate limit" if header.get("fps_source") == "rtss" else "a frame limiter such as RTSS"
+    return PresentWait(wait, interval, refresh, "limiter",
+                       f"{held}, at {1000 / interval:.1f} fps" + (f", below the display's {refresh:g} Hz" if refresh else "")
+                       + f": most likely {limiter}, which waits inside the app's Present. Host present times are "
+                       "when the app called Present, so they leave the wait out when the limiter hands the frame on "
+                       "before waiting, as RTSS's default mode appears to.")
+
+
 # ---------------------------------------------------------------------------------------------------------------------
 # Matching what the camera saw to what the host presented
 

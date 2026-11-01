@@ -169,6 +169,12 @@ class TracesTest(unittest.TestCase):
         info = {"video": "run.mp4", "frames": 100, "fps": 240.0, "stream": (2560, 1440), "stream_fps": 97.0, "found": 100,
                 "estimated": 0, "fit": fit, "flips_seen": 0, "flips_logged": 0, "device": "Test", "edge_difference": 0.0,
                 "pipeline": pipeline}
+        if with_traces:
+            # Held by a limiter at 97 fps on a 100 Hz display
+            from camera_timing import present_wait
+            calls = np.arange(20) * 0.010309
+            info["present_wait"] = present_wait(np.column_stack([np.arange(20), calls, calls, calls + 0.0102, np.zeros(20)]),
+                                                {"refresh_hz": "100"})
         frame_rows = [{"frame": f["frame"], "photon_s": f["photon_s"], "latency": f["latency"], "rising": f["rising"]} for f in frames]
         pacing = pacing_stats([f["frame"] for f in frames], [f["photon_s"] for f in frames], [f["present_s"] for f in frames],
                               [f["frame"] for f in frames])
@@ -185,12 +191,15 @@ class TracesTest(unittest.TestCase):
         self.assertIn("11.00 <small>ms</small>", html)
         self.assertIn("Client present &rarr; photon, to white / black", html)
         self.assertIn("Moonlight&#39;s &ldquo;capture to present&rdquo; is the middle of that", html)
+        self.assertIn("<dt>Inside Present</dt><dd>median 10.20 ms per frame, presenting every 10.31 ms at 100 Hz "
+                      "(a frame limiter: see the notes)</dd>", html)
 
     def test_report_without_traces_names_no_client_or_folder(self):
         # Most hosts and clients write no traces: nothing about Moonlight, and only file names, as reports get shared
         html, folder = self.write_report(False)
         self.assertNotIn("Moonlight", html)
         self.assertNotIn("Pipeline", html)
+        self.assertNotIn("Inside Present", html)
         self.assertNotIn(str(Path(folder)), html)
         self.assertIn("Files: a.csv, b.csv, c.png</p>", html)
 
