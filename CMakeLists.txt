@@ -14,7 +14,7 @@ set(LATENCY_COMPILE_OPTIONS -Wall -Wno-sign-compare)
 
 if(WIN32)
     add_executable(latency-test WIN32 app/main.cpp app/upload_server.cpp)
-    target_link_libraries(latency-test PRIVATE d3d11 d3dcompiler dxgi ws2_32 ole32 uuid)
+    target_link_libraries(latency-test PRIVATE d3d11 d3dcompiler dxgi d2d1 dwrite ws2_32 ole32 uuid)
     target_compile_options(latency-test PRIVATE ${LATENCY_COMPILE_OPTIONS})
     if(MINGW)
         # Link the runtime statically so the exe can be copied to a streaming host on its own.

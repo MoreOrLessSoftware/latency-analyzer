@@ -11,6 +11,8 @@
  *  - A band between the bottom fiducials shows two seven segment readouts: the host clock in milliseconds since
  *    the app started (the same timebase as the CSV log) and the milliseconds since the last input arrived, both
  *    as of when the frame was drawn.
+ *  - A band between the top fiducials shows a line of text: the frame rate, how frames are presented and the
+ *    rate actually presented. It is for the person running the test; the analyzer ignores it.
  *  - Everything else is noise that changes every frame, to load the encoder up to its bitrate.
  *
  * Patches sit on a block grid (64 px when the screen is big enough, otherwise 16 px) so encoder blocks do not
@@ -86,6 +88,7 @@ namespace latency_test {
     std::array<rect_t, frame_bit_count> frame_bits;  ///< Frame number bits, most significant first.
     std::array<rect_t, input_bit_count> input_bits;  ///< Input sequence bits, most significant first.
     rect_t readout;  ///< Black band between the bottom fiducials holding the clock and time since input digits.
+    rect_t info;  ///< Black band between the top fiducials with a text line on the frame rate and presentation.
     int digit_x;  ///< Left edge of the first digit.
     int digit_y;  ///< Top edge of the digits.
     int digit_w;  ///< Width of one seven segment digit; its height is twice this.
@@ -177,6 +180,9 @@ namespace latency_test {
     // The readout fills the space between the bottom fiducials, with digits as large as fit.
     const int readout_x = 2 * grid + cell;
     layout.readout = {readout_x, bottom, right - grid - readout_x, cell};
+    // The status text sits in the same place between the top fiducials
+    // and stops short of the quiet zone, so on short screens it is thinner or empty
+    layout.info = {readout_x, grid, right - grid - readout_x, std::clamp(quiet_top - grid, 0, cell)};
     const int fit_width = layout.readout.w * 4 / (5 * readout_slot_count + 2);
     const int fit_height = layout.readout.h * 3 / 8;
     layout.digit_w = std::max(align_down(std::min(fit_width, fit_height), 4), 4);
@@ -366,6 +372,44 @@ namespace latency_test {
       }
     }
     return options;
+  }
+
+  /**
+   * @brief What the status line in the info band describes.
+   */
+  struct status_t {
+    double fps = 0;  ///< Background frame rate in use.
+    bool fps_from_display = true;  ///< Whether fps came from the display's refresh rate rather than --fps.
+    int refresh_hz = 0;  ///< Display refresh rate; 0 when unknown.
+    bool vsync = false;  ///< Whether presents wait for vertical blank.
+    bool tearing = false;  ///< Whether presents may tear (only without v-sync).
+    double measured_fps = 0;  ///< Frames actually presented over the last second; 0 before the first second.
+    bool auto_flip = false;  ///< Whether the trigger flips on its own.
+    double auto_min_ms = 0;  ///< Shortest automatic flip interval.
+    double auto_max_ms = 0;  ///< Longest automatic flip interval.
+    int latency_cam_port = 0;  ///< Port Latency Cam can use; 0 when the servers are off or failed.
+  };
+
+  /**
+   * @brief The two lines of the status text: how frames are made and presented, then what is happening.
+   *
+   * @param status What to describe.
+   * @return The text, with the lines separated by a newline.
+   */
+  inline std::string status_text(const status_t &status) {
+    const auto number = [](double value) {
+      char buffer[32];
+      const auto [end, error] = std::to_chars(buffer, buffer + sizeof(buffer), value, std::chars_format::fixed, value == static_cast<int>(value) ? 0 : 1);
+      return std::string(buffer, end);
+    };
+    std::string text = number(status.fps) + " fps" + (status.fps_from_display ? " (the display's refresh)" : " (--fps)");
+    text += status.refresh_hz > 0 ? " \xC2\xB7 display " + std::to_string(status.refresh_hz) + " Hz" : " \xC2\xB7 display rate unknown";
+    text += status.vsync ? " \xC2\xB7 v-sync on" : status.tearing ? " \xC2\xB7 v-sync off, tearing" : " \xC2\xB7 v-sync off (no tearing support)";
+    text += "\n";
+    text += status.measured_fps > 0 ? "presenting " + number(status.measured_fps) + " fps" : "presenting \xE2\x80\xA6";
+    text += status.auto_flip ? " \xC2\xB7 auto flips every " + number(status.auto_min_ms) + "\xE2\x80\x93" + number(status.auto_max_ms) + " ms" : " \xC2\xB7 flips on key presses";
+    text += status.latency_cam_port > 0 ? " \xC2\xB7 Latency Cam port " + std::to_string(status.latency_cam_port) : " \xC2\xB7 Latency Cam off";
+    return text;
   }
 
   /**

@@ -151,6 +151,13 @@ GoogleTest at configure time; pass `-DBUILD_TESTS=OFF` to skip them.
    - the trigger square in the middle, with a row of bits above it (frame number) and below it (input number)
    - a bullseye in each corner
    - a readout band at the bottom with the host clock and the time since the last input
+   - a status band at the top: the frame rate the app aims for and where it came from, the display's refresh rate,
+     v-sync or tearing, the frame rate actually presented over the last second, how the trigger flips and the Latency
+     Cam port
+
+   By default the app presents without v-sync, with tearing. It redraws the background on a timer at `--fps`, or at
+   the display's refresh rate without it, and presents each flip straight away as an extra frame, so the presented
+   rate runs a little above the target while flips happen.
 3. Press **Ctrl+Alt+Shift+T** in Moonlight to turn the marker on. It appears a quarter of the way across the screen,
    on the same rows as the trigger, with a timer under it showing the time since it last flipped.
 

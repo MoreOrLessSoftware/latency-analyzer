@@ -99,6 +99,7 @@ TEST(LatencyTestPatternTest, Layout1080pIsGridAlignedAndCentered) {
   EXPECT_EQ(layout.input_bits[0], (rect_t {704, 704, 128, 64}));
   EXPECT_EQ(layout.fiducials[3], (rect_t {1728, 832, 128, 128}));
   EXPECT_EQ(layout.readout, (rect_t {256, 832, 1408, 128}));
+  EXPECT_EQ(layout.info, (rect_t {256, 64, 1408, 128}));
   EXPECT_EQ(layout.digit_w, 48);
   EXPECT_EQ(layout.digit_x, 256 + (1408 - 768) / 2);
   EXPECT_EQ(layout.digit_y, 832 + 16);
@@ -128,11 +129,15 @@ TEST_P(LatencyTestLayoutTest, ElementsFitDoNotOverlapAndStayOutOfTheNoise) {
 
   EXPECT_TRUE(encloses(screen, layout.quiet));
   EXPECT_TRUE(encloses(screen, layout.readout));
+  EXPECT_TRUE(encloses(screen, layout.info));
   EXPECT_FALSE(overlaps(layout.readout, layout.quiet));
+  EXPECT_FALSE(overlaps(layout.info, layout.quiet));
+  EXPECT_FALSE(overlaps(layout.info, layout.readout));
   for (const auto &fiducial : layout.fiducials) {
     EXPECT_TRUE(encloses(screen, fiducial));
     EXPECT_FALSE(overlaps(fiducial, layout.quiet));
     EXPECT_FALSE(overlaps(fiducial, layout.readout));
+    EXPECT_FALSE(overlaps(fiducial, layout.info));
   }
 
   // Every digit slot fits inside the readout band
@@ -263,4 +268,34 @@ TEST(LatencyTestPatternTest, ParseOptionsReadsUploadSettings) {
   EXPECT_TRUE(parse({}, error)->results_dir.empty());
   EXPECT_FALSE(parse({"--results"}, error));
   EXPECT_EQ(error, "--results needs a value");
+}
+
+TEST(LatencyTestPatternTest, StatusTextDescribesPresentation) {
+  latency_test::status_t status;
+  status.fps = 120;
+  status.refresh_hz = 120;
+  status.tearing = true;
+  status.measured_fps = 119.84;
+  status.auto_flip = true;
+  status.auto_min_ms = 150;
+  status.auto_max_ms = 400;
+  status.latency_cam_port = 48100;
+  EXPECT_EQ(latency_test::status_text(status),
+            "120 fps (the display's refresh) \xC2\xB7 display 120 Hz \xC2\xB7 v-sync off, tearing\n"
+            "presenting 119.8 fps \xC2\xB7 auto flips every 150\xE2\x80\x93" "400 ms \xC2\xB7 Latency Cam port 48100");
+
+  status.fps = 117.5;
+  status.fps_from_display = false;
+  status.refresh_hz = 0;
+  status.vsync = true;
+  status.measured_fps = 0;
+  status.auto_flip = false;
+  status.latency_cam_port = 0;
+  EXPECT_EQ(latency_test::status_text(status),
+            "117.5 fps (--fps) \xC2\xB7 display rate unknown \xC2\xB7 v-sync on\n"
+            "presenting \xE2\x80\xA6 \xC2\xB7 flips on key presses \xC2\xB7 Latency Cam off");
+
+  status.vsync = false;
+  status.tearing = false;
+  EXPECT_NE(latency_test::status_text(status).find("v-sync off (no tearing support)"), std::string::npos);
 }

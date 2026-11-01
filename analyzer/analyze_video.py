@@ -96,6 +96,7 @@ def compute_layout(width, height):
             Rect(right, bottom, cell, cell),
         ],
         "readout": Rect(readout_x, bottom, right - grid - readout_x, cell),
+        "info": Rect(readout_x, grid, right - grid - readout_x, min(max(frame_row_y - half - grid, 0), cell)),
     }
 
 
@@ -381,7 +382,7 @@ def find_marker(stack, valid, canvas, layout):
 
     # Mask out the host pattern's own changing parts.
     mask = np.ones_like(spread, dtype=bool)
-    for rect in [layout["quiet"], layout["readout"], *layout["fiducials"]]:
+    for rect in [layout["quiet"], layout["readout"], layout["info"], *layout["fiducials"]]:
         grown = Rect(rect.x - layout["cell"] / 4, rect.y - layout["cell"] / 4, rect.w + layout["cell"] / 2, rect.h + layout["cell"] / 2)
         rows, cols = canvas.slices(grown)
         mask[rows, cols] = False

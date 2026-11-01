@@ -24,8 +24,10 @@
 // platform includes (winsock2.h must come before windows.h)
 #include <winsock2.h>
 #include <mswsock.h>
+#include <d2d1.h>
 #include <d3d11.h>
 #include <d3dcompiler.h>
+#include <dwrite.h>
 #include <dxgi1_6.h>
 #include <shellapi.h>
 #include <shlobj.h>
@@ -231,6 +233,17 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
     ComPtr<ID3D11Buffer> constants;  ///< Pattern constants.
     bool tearing = false;  ///< Whether presenting with tearing is supported.
     UINT swap_flags = 0;  ///< Flags the swap chain was created with.
+
+    ComPtr<ID2D1Factory> d2d;  ///< Direct2D factory, for the status text.
+    ComPtr<ID2D1RenderTarget> text_target;  ///< Direct2D target on the back buffer.
+    ComPtr<ID2D1SolidColorBrush> white;  ///< Text brush.
+    ComPtr<ID2D1SolidColorBrush> black;  ///< Info band brush.
+    ComPtr<IDWriteFactory> dwrite;  ///< DirectWrite factory.
+    ComPtr<IDWriteTextFormat> text_format;  ///< Status text font, sized for the info band.
+    latency_test::status_t status;  ///< What the status text shows.
+    std::wstring status_text;  ///< The status text as drawn.
+    std::int64_t rate_window_qpc = 0;  ///< Start of the second the presented frame rate is counted over.
+    std::uint32_t rate_frames = 0;  ///< Frames presented so far in that second.
 
     std::deque<input_event_t> pending;  ///< Inputs not answered yet.
     std::uint32_t next_seq = 1;  ///< Sequence number for the next input.
@@ -550,6 +563,29 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
 
     const D3D11_VIEWPORT viewport {0, 0, static_cast<float>(app.width), static_cast<float>(app.height), 0, 1};
     app.context->RSSetViewports(1, &viewport);
+
+    // The status text is drawn with Direct2D on the same back buffer. Without it the pattern still works.
+    app.text_target.Reset();
+    app.white.Reset();
+    app.black.Reset();
+    app.text_format.Reset();
+    ComPtr<IDXGISurface> surface;
+    if (app.d2d && app.dwrite && SUCCEEDED(back_buffer.As(&surface))) {
+      const auto properties = D2D1::RenderTargetProperties(D2D1_RENDER_TARGET_TYPE_DEFAULT, D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), 96, 96);
+      if (SUCCEEDED(app.d2d->CreateDxgiSurfaceRenderTarget(surface.Get(), &properties, &app.text_target))) {
+        app.text_target->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::White), &app.white);
+        app.text_target->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::Black), &app.black);
+        // Two lines in the band, each about 75 characters across it
+        const auto &info = app.layout.info;
+        const float size = std::max(8.0f, std::min(info.h * 0.3f, info.w / 40.0f));
+        app.dwrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, size, L"en-us", &app.text_format);
+        if (app.text_format) {
+          app.text_format->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+          app.text_format->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+          app.text_format->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+        }
+      }
+    }
     return S_OK;
   }
 
@@ -563,6 +599,9 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
     app.resize_pending = false;
     app.context->OMSetRenderTargets(0, nullptr, nullptr);
     app.rtv.Reset();
+    app.text_target.Reset();
+    app.white.Reset();
+    app.black.Reset();
     const HRESULT hr = app.swap_chain->ResizeBuffers(0, 0, 0, DXGI_FORMAT_UNKNOWN, app.swap_flags);
     return FAILED(hr) ? hr : create_target(app);
   }
@@ -615,6 +654,9 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
     }
     factory->MakeWindowAssociation(app.hwnd, DXGI_MWA_NO_ALT_ENTER);
 
+    D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, app.d2d.GetAddressOf());
+    DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory), reinterpret_cast<IUnknown **>(app.dwrite.GetAddressOf()));
+
     hr = create_target(app);
     if (FAILED(hr)) {
       return fail("Creating the render target", hr);
@@ -644,11 +686,49 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
       return fail("Creating the constant buffer", hr);
     }
 
-    app.context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    app.context->VSSetShader(app.vs.Get(), nullptr, 0);
-    app.context->PSSetShader(app.ps.Get(), nullptr, 0);
-    app.context->PSSetConstantBuffers(0, 1, app.constants.GetAddressOf());
     return 0;
+  }
+
+  /**
+   * @brief Count presented frames and refresh the status text once a second.
+   *
+   * @param app App state.
+   * @param presented_qpc When the frame just presented returned from Present.
+   */
+  void update_status(app_t &app, std::int64_t presented_qpc) {
+    ++app.rate_frames;
+    if (app.rate_window_qpc == 0) {
+      app.rate_window_qpc = presented_qpc;
+      app.rate_frames = 0;
+    }
+    const std::int64_t elapsed = presented_qpc - app.rate_window_qpc;
+    if (elapsed >= app.qpc_frequency || app.status_text.empty()) {
+      if (elapsed >= app.qpc_frequency) {
+        app.status.measured_fps = app.rate_frames * static_cast<double>(app.qpc_frequency) / static_cast<double>(elapsed);
+        app.rate_window_qpc = presented_qpc;
+        app.rate_frames = 0;
+      }
+      app.status_text = to_utf16(latency_test::status_text(app.status));
+    }
+  }
+
+  /**
+   * @brief Draw the status text in the info band.
+   *
+   * @param app App state.
+   */
+  void draw_status(app_t &app) {
+    if (!app.text_target || !app.text_format || app.status_text.empty()) {
+      return;
+    }
+    const auto &info = app.layout.info;
+    const D2D1_RECT_F band {static_cast<float>(info.x), static_cast<float>(info.y), static_cast<float>(info.x + info.w), static_cast<float>(info.y + info.h)};
+    app.text_target->BeginDraw();
+    app.text_target->FillRectangle(band, app.black.Get());
+    app.text_target->DrawText(app.status_text.data(), static_cast<UINT32>(app.status_text.size()), app.text_format.Get(), band, app.white.Get());
+    if (app.text_target->EndDraw() == D2DERR_RECREATE_TARGET) {
+      create_target(app);
+    }
   }
 
   /**
@@ -691,14 +771,27 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
       app.context->Unmap(app.constants.Get(), 0);
     }
 
+    // Set every frame, since Direct2D shares the device and may change the pipeline state
+    app.context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    app.context->IASetInputLayout(nullptr);
+    app.context->VSSetShader(app.vs.Get(), nullptr, 0);
+    app.context->PSSetShader(app.ps.Get(), nullptr, 0);
+    app.context->PSSetConstantBuffers(0, 1, app.constants.GetAddressOf());
+    app.context->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
+    app.context->OMSetDepthStencilState(nullptr, 0);
+    app.context->RSSetState(nullptr);
+    const D3D11_VIEWPORT viewport {0, 0, static_cast<float>(app.width), static_cast<float>(app.height), 0, 1};
+    app.context->RSSetViewports(1, &viewport);
     app.context->OMSetRenderTargets(1, app.rtv.GetAddressOf(), nullptr);
     app.context->Draw(3, 0);
+    draw_status(app);
 
     const UINT sync_interval = app.options.vsync ? 1 : 0;
     const UINT present_flags = !app.options.vsync && app.tearing ? DXGI_PRESENT_ALLOW_TEARING : 0;
     const std::int64_t present_qpc = qpc_now();
     app.swap_chain->Present(sync_interval, present_flags);
     const std::int64_t presented_qpc = qpc_now();
+    update_status(app, presented_qpc);
 
     if (app.frames_log) {
       std::fputs(
@@ -923,9 +1016,17 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
     SetForegroundWindow(app.hwnd);
 
     const int refresh = refresh_rate(app.hwnd);
+    app.status.fps_from_display = app.options.fps <= 0;
     if (app.options.fps <= 0) {
       app.options.fps = refresh > 0 ? refresh : 60;
     }
+    app.status.fps = app.options.fps;
+    app.status.refresh_hz = refresh;
+    app.status.vsync = app.options.vsync;
+    app.status.tearing = !app.options.vsync && app.tearing;
+    app.status.auto_flip = app.options.auto_flip;
+    app.status.auto_min_ms = app.options.auto_min_ms;
+    app.status.auto_max_ms = app.options.auto_max_ms;
     time_server_t time_server;
     std::string time_server_state = "off";
     if (app.options.time_port > 0) {
@@ -954,7 +1055,8 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
           std::fflush(app.frames_log);
         }
       };
-      upload_server.start(app.options.time_port, std::move(config));
+      const std::string upload_error = upload_server.start(app.options.time_port, std::move(config));
+      app.status.latency_cam_port = upload_error.empty() ? app.options.time_port : 0;
     }
 
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
