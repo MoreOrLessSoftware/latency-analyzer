@@ -247,8 +247,20 @@ TEST(LatencyTestPatternTest, ParseOptionsRejectsBadAutoAndTimeServer) {
 }
 
 TEST(LatencyTestPatternTest, FramesLogPathSitsNextToTheLog) {
-  EXPECT_EQ(latency_test::frames_log_path("C:\temp\run.csv"), "C:\temp\run.frames.csv");
+  EXPECT_EQ(latency_test::frames_log_path("C:\\temp\\run.csv"), "C:\\temp\\run.frames.csv");
   EXPECT_EQ(latency_test::frames_log_path("run.log"), "run.log.frames.csv");
   EXPECT_EQ(latency_test::frames_log_path(".csv"), ".frames.csv");
   EXPECT_EQ(latency_test::frames_log_path("x"), "x.frames.csv");
+}
+
+TEST(LatencyTestPatternTest, ParseOptionsReadsUploadSettings) {
+  std::string error;
+  const auto options = parse({"--results", "D:\\r", "--analyzer", "C:\\a\\analyze_video.py", "--python", "C:\\py\\python.exe"}, error);
+  ASSERT_TRUE(options) << error;
+  EXPECT_EQ(options->results_dir, "D:\\r");
+  EXPECT_EQ(options->analyzer_path, "C:\\a\\analyze_video.py");
+  EXPECT_EQ(options->python_path, "C:\\py\\python.exe");
+  EXPECT_TRUE(parse({}, error)->results_dir.empty());
+  EXPECT_FALSE(parse({"--results"}, error));
+  EXPECT_EQ(error, "--results needs a value");
 }

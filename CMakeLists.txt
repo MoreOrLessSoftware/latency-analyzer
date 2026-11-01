@@ -13,8 +13,8 @@ option(BUILD_TESTS "Build the unit tests" ON)
 set(LATENCY_COMPILE_OPTIONS -Wall -Wno-sign-compare)
 
 if(WIN32)
-    add_executable(latency-test WIN32 app/main.cpp)
-    target_link_libraries(latency-test PRIVATE d3d11 d3dcompiler dxgi ws2_32)
+    add_executable(latency-test WIN32 app/main.cpp app/upload_server.cpp)
+    target_link_libraries(latency-test PRIVATE d3d11 d3dcompiler dxgi ws2_32 ole32 uuid)
     target_compile_options(latency-test PRIVATE ${LATENCY_COMPILE_OPTIONS})
     if(MINGW)
         # Link the runtime statically so the exe can be copied to a streaming host on its own.
@@ -26,6 +26,9 @@ endif()
 install(FILES
         analyzer/analyze_video.py
         analyzer/report.py
+        analyzer/camera_mode.py
+        analyzer/camera_timing.py
+        analyzer/time_server.py
         analyzer/analyze.bat
         README.md
         DESTINATION .)
@@ -41,7 +44,7 @@ if(BUILD_TESTS)
     FetchContent_MakeAvailable(googletest)
 
     enable_testing()
-    add_executable(test_latency tests/test_pattern.cpp tests/test_clock_sync.cpp)
+    add_executable(test_latency tests/test_pattern.cpp tests/test_clock_sync.cpp tests/test_http.cpp)
     target_include_directories(test_latency PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(test_latency PRIVATE GTest::gtest_main)
     target_compile_options(test_latency PRIVATE ${LATENCY_COMPILE_OPTIONS})

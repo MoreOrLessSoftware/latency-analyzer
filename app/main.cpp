@@ -19,6 +19,7 @@
 // local includes
 #include "clock_sync.h"
 #include "pattern.h"
+#include "upload_server.h"
 
 // platform includes (winsock2.h must come before windows.h)
 #include <winsock2.h>
@@ -27,6 +28,7 @@
 #include <d3dcompiler.h>
 #include <dxgi1_6.h>
 #include <shellapi.h>
+#include <shlobj.h>
 #include <windows.h>
 #include <wrl/client.h>
 
@@ -239,6 +241,7 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
 
     std::FILE *log {};  ///< CSV log of inputs.
     std::FILE *frames_log {};  ///< CSV log of every frame.
+    std::string log_path;  ///< Path of the input log.
     std::int64_t frames_flushed_qpc = 0;  ///< When the frames log was last flushed.
     std::int64_t qpc_start {};  ///< QueryPerformanceCounter value logged times are relative to.
     std::int64_t qpc_frequency {};  ///< QueryPerformanceCounter ticks per second.
@@ -777,6 +780,7 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
       GetTempPathW(MAX_PATH + 1, temp);
       path = to_utf8(temp) + "sunshine_latency_test.csv";
     }
+    app.log_path = path;
     app.log = _wfopen(to_utf16(path).c_str(), L"w");
     app.frames_log = _wfopen(to_utf16(latency_test::frames_log_path(path)).c_str(), L"w");
 
@@ -822,6 +826,26 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
       std::fputs((header + "frame,render_us,present_call_us,present_return_us,input_seq\n").c_str(), app.frames_log);
       std::fflush(app.frames_log);
     }
+  }
+
+  /**
+   * @brief Default folder for Latency Cam uploads: Latency Cam in the user's Documents.
+   *
+   * @return The folder.
+   */
+  std::filesystem::path default_results_dir() {
+    PWSTR documents = nullptr;
+    std::filesystem::path dir;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Documents, 0, nullptr, &documents))) {
+      dir = std::filesystem::path(documents) / L"Latency Cam";
+    }
+    else {
+      wchar_t temp[MAX_PATH + 1] {};
+      GetTempPathW(MAX_PATH + 1, temp);
+      dir = std::filesystem::path(temp) / L"Latency Cam";
+    }
+    CoTaskMemFree(documents);
+    return dir;
   }
 
   /**
@@ -910,6 +934,29 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
     }
     open_log(app, refresh, time_server_state);
 
+    // Latency Cam uploads its recordings to the same port over TCP, and the analysis runs here
+    latency_test::upload_server_t upload_server;
+    if (time_server.running) {
+      latency_test::analysis_config_t config;
+      config.results_dir = app.options.results_dir.empty() ? default_results_dir() : std::filesystem::path(to_utf16(app.options.results_dir));
+      config.analyzer = to_utf16(app.options.analyzer_path);
+      config.python = to_utf16(app.options.python_path);
+      config.host_log = to_utf16(app.log_path);
+      config.width = app.width;
+      config.height = app.height;
+      config.fps = app.options.fps;
+      config.flush_logs = [&app]() {
+        // The C runtime locks each stream, so this is safe while the render loop writes
+        if (app.log) {
+          std::fflush(app.log);
+        }
+        if (app.frames_log) {
+          std::fflush(app.frames_log);
+        }
+      };
+      upload_server.start(app.options.time_port, std::move(config));
+    }
+
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
     const HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
 
@@ -935,6 +982,7 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
 
       if (app.resize_pending) {
         if (const HRESULT hr = resize(app); FAILED(hr)) {
+          upload_server.stop();
           stop_time_server(time_server);
           return fail("Resizing the swap chain", hr);
         }
@@ -966,6 +1014,7 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
     }
 
     CloseHandle(timer);
+    upload_server.stop();
     stop_time_server(time_server);
     if (app.log) {
       std::fclose(app.log);

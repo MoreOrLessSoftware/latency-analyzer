@@ -4,6 +4,7 @@ every host frame, the time from the host presenting it to it reaching the client
 showed the host's frames.
 """
 import csv
+import json
 import os
 import sys
 from pathlib import Path
@@ -210,8 +211,36 @@ def run(args, timing_path):
     for note in notes:
         print(f"Note: {note}")
 
+    def stats(values):
+        values = np.asarray(values, dtype=np.float64)
+        if values.size == 0:
+            return None
+        return {"n": int(values.size), "median": round(float(np.median(values)), 3), "mean": round(float(values.mean()), 3),
+                "sd": round(float(values.std()), 3), "p10": round(float(np.percentile(values, 10)), 3),
+                "p90": round(float(np.percentile(values, 90)), 3)}
+
+    summary_path = stem.with_name(stem.name + ".summary.json")
+    summary_path.write_text(json.dumps({
+        "video": args.video.name,
+        "flips": stats(flip_latencies),
+        "frames": stats(frame_latencies),
+        "pacing": {
+            "mismatch": stats(pacing.mismatch_ms),
+            "host_interval": stats(pacing.host_intervals_ms),
+            "client_interval": stats(pacing.client_intervals_ms),
+            "uneven": pacing.uneven,
+            "pairs": int(pacing.mismatch_ms.size),
+            "frames_seen": pacing.frames_seen,
+            "frames_presented": pacing.frames_presented,
+            "not_seen": pacing.not_seen,
+        },
+        "sync": {"min_rtt_ms": round(fit.min_rtt_ms, 3), "scatter_ms": round(fit.residual_ms, 4), "drift_ppm": round(fit.drift_ppm, 2)},
+        "notes": notes,
+        "report": stem.name + ".report.html" if args.report else None,
+    }, indent=1))
+
     print()
-    print(f"Wrote {flips_csv.name}, {frames_csv.name} and {regions_path.name} in {out_dir}")
+    print(f"Wrote {flips_csv.name}, {frames_csv.name}, {summary_path.name} and {regions_path.name} in {out_dir}")
     if args.report:
         report_path = stem.with_name(stem.name + ".report.html")
         info = {

@@ -41,19 +41,38 @@ the key press to the trigger being presented.
 
 ## Latency Cam: present to photon and pacing
 
-1. **Host:** stream `latency-test.exe --auto`. The trigger then flips on its own, and the app answers Latency Cam's
-   clock sync on UDP port 48100 (allow it through the firewall when asked).
+1. **Host:** stream `latency-test.exe --auto`. The trigger then flips on its own, and the app answers Latency Cam on
+   port 48100: clock sync over UDP and uploads over TCP. Allow it through the firewall for both when asked. The host
+   needs Python with `numpy` and `opencv-python-headless`, and `analyze_video.py` next to `latency-test.exe` (as
+   installed) or in `..\analyzer` (in a build folder); `--analyzer` and `--python` point elsewhere.
 2. **Phone:** open Latency Cam ([android/README.md](android/README.md)) on the same network. Wait for the sync line to
-   turn green, frame the whole client display, enter a test name and record for 10–30 s. Copy
-   `NAME.mp4` and `NAME.camera.json` from `Download/LatencyCam` on the phone into one folder.
-3. **Analyse**, with the host log from the run (by default `%TEMP%\sunshine_latency_test.csv` on the host, with its
-   `.frames.csv` next to it):
+   turn green, frame the whole client display, enter a test name and record for 10–30 s.
+3. **Results:** after **Stop**, the phone uploads the recording, the host analyses it, and the phone shows the
+   headline numbers with an **Open report** button. Everything is saved on the host in `Documents\Latency Cam`
+   (`--results` changes it).
 
-   ```
-   python analyzer/analyze_video.py NAME.mp4 --stream 3840x2160 --stream-fps 117 --host-log sunshine_latency_test.csv --report
-   ```
+To analyse a recording by hand, put `NAME.mp4` and `NAME.camera.json` in one folder and pass the host log from the
+run (by default `%TEMP%\sunshine_latency_test.csv`, with its `.frames.csv` next to it):
 
-   The analyzer switches to this mode when `NAME.camera.json` sits next to the video.
+```
+python analyzer/analyze_video.py NAME.mp4 --stream 3840x2160 --stream-fps 117 --host-log sunshine_latency_test.csv --report
+```
+
+The analyzer switches to this mode when `NAME.camera.json` sits next to the video.
+
+### The upload API
+
+`latency-test.exe` serves these on TCP port 48100 while it runs (see `app/http.h`):
+
+| Request | Does |
+|---|---|
+| `PUT /recordings/NAME.mp4`, `PUT /recordings/NAME.camera.json` | Saves a recording's files in the results folder |
+| `POST /recordings/NAME/analyze` | Runs the analyzer on them with the app's own log, resolution and frame rate |
+| `GET /recordings/NAME/status` | `analyzing`, `done` with the summary, or `failed` with the analyzer's last lines |
+| `GET /recordings/NAME/report` | The HTML report |
+
+Names may only use letters, digits, `.`, `_` and `-`. The server only runs while the test app does, and
+`--no-time-server` turns it off. Anyone on the network can upload to it while it runs.
 
 It reports:
 
@@ -121,8 +140,10 @@ GoogleTest at configure time; pass `-DBUILD_TESTS=OFF` to skip them.
    | `--log <path>` | CSV log of each input and the frame that answered it, timed with the host's QPC. The default is `%TEMP%\sunshine_latency_test.csv`. Every frame's render and present times go to the same name ending `.frames.csv`. |
    | `--auto` | Flips the trigger on its own every 150–400 ms, at random, as well as on key presses. |
    | `--auto-interval <min>-<max>` | The interval range for `--auto` in ms, for example `100-300`. Implies `--auto`. |
-   | `--time-port <n>` | UDP port answering Latency Cam's clock sync requests, default 48100. Allow `latency-test.exe` through the firewall when asked. |
-   | `--no-time-server` | Doesn't answer clock sync requests. |
+   | `--time-port <n>` | Port answering Latency Cam, default 48100: clock sync over UDP and uploads over TCP. Allow `latency-test.exe` through the firewall when asked. |
+   | `--no-time-server` | Doesn't answer clock sync requests or accept uploads. |
+   | `--results <dir>` | Where Latency Cam uploads and their analysis go. The default is `Latency Cam` in Documents. |
+   | `--analyzer <path>`, `--python <path>` | The `analyze_video.py` and Python to run on uploads, if not found automatically. |
    | `--windowed` | Runs in a 1280x720 window instead of fullscreen. |
 
 2. Stream the app. The screen shows:

@@ -59,7 +59,8 @@ final class Recorder {
     static final int WIDTH = 1920;
     static final int HEIGHT = 1080;
     static final int FPS = 240;
-    private static final int BITRATE = 120_000_000;
+    // The analysis only needs the pattern's large flat patches, and a smaller file uploads faster
+    private static final int BITRATE = 60_000_000;
     private static final long SYNC_TAIL_MS = 2000;
     private static final long SYNC_LEAD_NS = 10_000_000_000L;
 
@@ -69,7 +70,7 @@ final class Recorder {
 
         void onError(String message);
 
-        void onSaved(String name, int frames);
+        void onSaved(String name, int frames, Uri video, Uri timing);
 
         /** The camera closed without being asked to, e.g. another app took it. */
         void onClosed(String reason);
@@ -536,8 +537,9 @@ final class Recorder {
         done.put(MediaStore.MediaColumns.IS_PENDING, 0);
         context.getContentResolver().update(videoUri, done, null, null);
 
+        Uri timingUri = null;
         try {
-            writeTiming();
+            timingUri = writeTiming();
         } catch (IOException | JSONException | RuntimeException e) {
             error = "Could not write the timing file: " + e.getMessage();
         }
@@ -549,11 +551,11 @@ final class Recorder {
         if (error != null) {
             listener.onError(error);
         } else {
-            listener.onSaved(name, frames);
+            listener.onSaved(name, frames, videoUri, timingUri);
         }
     }
 
-    private void writeTiming() throws IOException, JSONException {
+    private Uri writeTiming() throws IOException, JSONException {
         JSONObject root = new JSONObject();
         root.put("format", "ml-latency-camera");
         root.put("version", 1);
@@ -625,6 +627,7 @@ final class Recorder {
         ContentValues done = new ContentValues();
         done.put(MediaStore.MediaColumns.IS_PENDING, 0);
         resolver.update(uri, done, null, null);
+        return uri;
     }
 
     /**

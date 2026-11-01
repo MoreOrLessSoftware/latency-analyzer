@@ -216,7 +216,10 @@ namespace latency_test {
     bool auto_flip = false;  ///< Flip the trigger on its own at random intervals.
     double auto_min_ms = 150;  ///< Shortest interval between automatic flips.
     double auto_max_ms = 400;  ///< Longest interval between automatic flips.
-    int time_port = 48100;  ///< UDP port of the clock sync server; 0 turns it off.
+    int time_port = 48100;  ///< UDP port of the clock sync server and TCP port of the upload server; 0 turns both off.
+    std::string results_dir;  ///< Where Latency Cam uploads and their results go; empty picks "Latency Cam" in Documents.
+    std::string analyzer_path;  ///< analyze_video.py; empty looks next to the executable.
+    std::string python_path;  ///< Python interpreter; empty finds python.exe or py.exe on PATH.
   };
 
   /**
@@ -237,8 +240,13 @@ namespace latency_test {
     "  --auto           Flip the trigger on its own every 150 to 400 ms, at random.\n"
     "  --auto-interval <min>-<max>\n"
     "                   Interval range for --auto in ms, e.g. 100-300 (implies --auto).\n"
-    "  --time-port <n>  UDP port answering Latency Cam's clock sync (default 48100).\n"
-    "  --no-time-server Do not answer clock sync requests.\n"
+    "  --time-port <n>  Port answering Latency Cam: clock sync on UDP and uploads on TCP\n"
+    "                   (default 48100).\n"
+    "  --no-time-server Do not answer clock sync requests or accept uploads.\n"
+    "  --results <dir>  Where uploaded recordings and their analysis go\n"
+    "                   (default: Documents\\Latency Cam).\n"
+    "  --analyzer <path> analyze_video.py to run on uploads (default: next to this app).\n"
+    "  --python <path>  Python to run it with (default: python.exe or py.exe on PATH).\n"
     "  --help           Show this text.\n"
     "\n"
     "Any key press (except Esc) or mouse button press flips the trigger patch,\n"
@@ -341,12 +349,16 @@ namespace latency_test {
         }
         (is_noise ? options.noise : options.fps) = *number;
       }
-      else if (arg == "--log") {
+      else if (arg == "--log" || arg == "--results" || arg == "--analyzer" || arg == "--python") {
         const auto text = value();
         if (!text) {
           return std::nullopt;
         }
-        options.log_path = *text;
+        auto &target = arg == "--log"     ? options.log_path :
+                       arg == "--results" ? options.results_dir :
+                       arg == "--analyzer" ? options.analyzer_path :
+                                             options.python_path;
+        target = *text;
       }
       else {
         error = "Unknown option " + std::string(arg);

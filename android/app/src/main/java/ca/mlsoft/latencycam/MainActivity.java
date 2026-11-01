@@ -2,12 +2,14 @@ package ca.mlsoft.latencycam;
 
 import android.Manifest;
 import android.app.Activity;
+import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.Matrix;
 import android.graphics.RectF;
 import android.graphics.SurfaceTexture;
+import android.net.Uri;
 import android.net.wifi.WifiManager;
 import android.os.Bundle;
 import android.os.Handler;
@@ -23,10 +25,14 @@ import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import android.view.inputmethod.EditorInfo;
 import android.widget.Button;
+import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
+
+import org.json.JSONObject;
 
 import java.net.InetAddress;
 import java.text.SimpleDateFormat;
@@ -50,6 +56,11 @@ public class MainActivity extends Activity implements Recorder.Listener {
     private TextView cameraText;
     private TextView syncText;
     private TextView recordText;
+    private TextView resultText;
+    private CheckBox uploadBox;
+    private Button reportButton;
+    private String reportUrl;
+    private Uploader uploader;
     private WifiManager.WifiLock wifiLock;
     private SharedPreferences prefs;
     private boolean cameraOpen;
@@ -60,6 +71,7 @@ public class MainActivity extends Activity implements Recorder.Listener {
         super.onCreate(savedInstanceState);
         prefs = getSharedPreferences("latency-cam", MODE_PRIVATE);
         recorder = new Recorder(this, clockSync, this);
+        uploader = new Uploader(getContentResolver(), uploadListener);
         buildViews();
         WifiManager wifi = getSystemService(WifiManager.class);
         wifiLock = wifi.createWifiLock(WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "latency-cam");
@@ -98,9 +110,11 @@ public class MainActivity extends Activity implements Recorder.Listener {
         LinearLayout panel = new LinearLayout(this);
         panel.setOrientation(LinearLayout.VERTICAL);
         panel.setPadding(dp(16), dp(12), dp(16), dp(12));
-        panel.setBackgroundColor(0xCC000000);
-        FrameLayout.LayoutParams panelParams = new FrameLayout.LayoutParams(dp(300), ViewGroup.LayoutParams.MATCH_PARENT, Gravity.END);
-        root.addView(panel, panelParams);
+        // The panel scrolls, since the results can run past the bottom of a landscape screen
+        ScrollView scroller = new ScrollView(this);
+        scroller.setBackgroundColor(0xCC000000);
+        scroller.addView(panel, new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        root.addView(scroller, new FrameLayout.LayoutParams(dp(300), ViewGroup.LayoutParams.MATCH_PARENT, Gravity.END));
 
         nameField = field("Test name, e.g. amf-av1-4ktv", InputType.TYPE_CLASS_TEXT);
         nameField.setText(prefs.getString("name", ""));
@@ -127,11 +141,30 @@ public class MainActivity extends Activity implements Recorder.Listener {
         buttonParams.topMargin = dp(12);
         panel.addView(recordButton, buttonParams);
 
+        uploadBox = new CheckBox(this);
+        uploadBox.setText("Upload to the host and analyze");
+        uploadBox.setTextColor(Color.WHITE);
+        uploadBox.setChecked(prefs.getBoolean("upload", true));
+        uploadBox.setOnCheckedChangeListener((v, checked) -> prefs.edit().putBoolean("upload", checked).apply());
+        panel.addView(uploadBox);
+
         syncText = status();
         recordText = status();
+        resultText = status();
         cameraText = status();
         panel.addView(syncText);
         panel.addView(recordText);
+        panel.addView(resultText);
+
+        reportButton = new Button(this);
+        reportButton.setText("Open report");
+        reportButton.setVisibility(View.GONE);
+        reportButton.setOnClickListener(v -> {
+            if (reportUrl != null) {
+                startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(reportUrl)));
+            }
+        });
+        panel.addView(reportButton);
         panel.addView(cameraText);
 
         setContentView(root);
@@ -343,7 +376,41 @@ public class MainActivity extends Activity implements Recorder.Listener {
     }
 
     @Override
-    public void onSaved(String name, int frames) {
-        ui.post(() -> recordText.setText("Saved Download/LatencyCam/" + name + ".mp4 and .camera.json, " + frames + " frames"));
+    public void onSaved(String name, int frames, Uri video, Uri timing) {
+        ui.post(() -> {
+            recordText.setText("Saved Download/LatencyCam/" + name + ".mp4 and .camera.json, " + frames + " frames");
+            reportButton.setVisibility(View.GONE);
+            reportUrl = null;
+            InetAddress host = clockSync.getHost();
+            if (!uploadBox.isChecked()) {
+                resultText.setText("");
+            } else if (host == null || timing == null) {
+                resultText.setText("Not uploaded: no host time server was found.");
+            } else {
+                resultText.setText("Uploading…");
+                uploader.start(host, ClockSync.PORT, name, video, timing);
+            }
+        });
     }
+
+    private final Uploader.Listener uploadListener = new Uploader.Listener() {
+        @Override
+        public void onProgress(String text) {
+            ui.post(() -> resultText.setText(text));
+        }
+
+        @Override
+        public void onDone(JSONObject summary, String url) {
+            ui.post(() -> {
+                resultText.setText(Uploader.describe(summary));
+                reportUrl = url;
+                reportButton.setVisibility(View.VISIBLE);
+            });
+        }
+
+        @Override
+        public void onFailed(String message) {
+            ui.post(() -> resultText.setText(message));
+        }
+    };
 }
