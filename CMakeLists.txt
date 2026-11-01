@@ -21,6 +21,17 @@ if(WIN32)
         target_link_options(latency-test PRIVATE -static)
     endif()
     install(TARGETS latency-test RUNTIME DESTINATION .)
+
+    # The analyzer bundled with Python, numpy and OpenCV into one exe, so hosts need no Python. Not part of the
+    # default build because it downloads packages the first time and takes a minute:
+    #   ninja -C cmake-build-release latency-analyzer
+    add_custom_target(latency-analyzer
+            COMMAND powershell -NoProfile -ExecutionPolicy Bypass -File ${CMAKE_CURRENT_SOURCE_DIR}/analyzer/build_exe.ps1
+                    -BuildDir ${CMAKE_CURRENT_BINARY_DIR}
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+            COMMENT "Bundling the analyzer into latency-analyzer.exe with PyInstaller"
+            VERBATIM)
+    install(PROGRAMS ${CMAKE_CURRENT_BINARY_DIR}/latency-analyzer.exe DESTINATION . OPTIONAL)
 endif()
 
 install(FILES

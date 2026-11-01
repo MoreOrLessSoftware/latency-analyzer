@@ -36,20 +36,23 @@ the key press to the trigger being presented.
 | `tests/test_analyzer.py` | Unit tests for the analyzer and report helpers |
 | `analyzer/camera_mode.py`, `analyzer/camera_timing.py` | Analysis of Latency Cam videos |
 | `tests/test_camera_timing.py`, `tests/synthetic_camera.py` | Tests for it, including an end to end run on a synthetic recording with known latencies |
+| `analyzer/build_exe.ps1`, `analyzer/requirements.txt` | Bundle the analyzer into `latency-analyzer.exe` with PyInstaller |
 | `analyzer/time_server.py` | Stand-alone version of the app's clock sync server, for testing Latency Cam without the app |
 | `android/` | Latency Cam, an Android app that records 240 fps video with every frame timed on the host's clock (see [android/README.md](android/README.md)) |
 
 ## Latency Cam: present to photon and pacing
 
 1. **Host:** stream `latency-test.exe`. The trigger flips on its own (A toggles it), and the app answers Latency Cam on
-   port 48100: clock sync over UDP and uploads over TCP. Allow it through the firewall for both when asked. The host
-   needs Python with `numpy` and `opencv-python-headless`, and `analyze_video.py` next to `latency-test.exe` (as
-   installed) or in `..\analyzer` (in a build folder); `--analyzer` and `--python` point elsewhere.
+   port 48100: clock sync over UDP and uploads over TCP. Allow it through the firewall for both (see
+   [Deploy to a host](#deploy-to-a-host)). Uploads are analysed by `latency-analyzer.exe` next to `latency-test.exe`,
+   which needs nothing else installed; without it, by `analyze_video.py` with Python, `numpy` and
+   `opencv-python-headless`. `--analyzer` and `--python` point elsewhere.
 2. **Phone:** open Latency Cam ([android/README.md](android/README.md)) on the same network. Wait for the sync line to
    turn green, frame the whole client display, enter a test name and record for 10–30 s.
 3. **Results:** after **Stop**, the phone uploads the recording, the host analyses it, and the phone shows the
-   headline numbers with an **Open report** button. Everything is saved on the host in `Documents\Latency Cam`
-   (`--results` changes it).
+   headline numbers with an **Open report** button. Everything is saved on the host in a `results` folder next to
+   `latency-test.exe`, or in `Documents\Latency Cam` when that folder can't be written (under Program Files, for
+   example). `--results` changes it.
 
 To analyse a recording by hand, put `NAME.mp4` and `NAME.camera.json` in one folder and pass the host log from the
 run (by default `%TEMP%\sunshine_latency_test.csv`, with its `.frames.csv` next to it):
@@ -127,6 +130,38 @@ python -m unittest discover -s tests
 `latency-test.exe` is linked statically, so it can be copied to the host on its own. The unit tests download
 GoogleTest at configure time; pass `-DBUILD_TESTS=OFF` to skip them.
 
+To bundle the analyzer, with Python, numpy and OpenCV, into a single `latency-analyzer.exe` (about 65 MB):
+
+```
+ninja -C cmake-build-release latency-analyzer
+```
+
+It runs `analyzer/build_exe.ps1`, which needs Python 3 with the `py` launcher and network access the first time. It
+installs `analyzer/requirements.txt` and PyInstaller into a virtual environment in the build folder, leaving the
+system's Python packages alone. It isn't part of the default build because it takes about a minute.
+
+## Deploy to a host
+
+1. Build both, then install them into one folder:
+
+   ```
+   ninja -C cmake-build-release latency-analyzer
+   cmake --install cmake-build-release --prefix C:\Tools\latency-test
+   ```
+
+   The folder holds `latency-test.exe`, `latency-analyzer.exe`, the analyzer scripts and this README. Only the two
+   exes are needed on a host; copy the folder to it as it is.
+2. On the host, allow the app through the firewall before the first stream, from an elevated prompt, so Windows
+   doesn't ask in the middle of one:
+
+   ```
+   netsh advfirewall firewall add rule name="latency-test" dir=in action=allow program="C:\Tools\latency-test\latency-test.exe" enable=yes
+   ```
+3. In Sunshine, add an app whose command is the full path to `latency-test.exe`.
+
+Results go to `results` in that folder, so keep it somewhere the streaming user can write to (not Program Files), or
+pass `--results`.
+
 ## Set up
 
 1. In Sunshine's Applications page, add an app whose command is the full path to `latency-test.exe`. Its options:
@@ -142,7 +177,7 @@ GoogleTest at configure time; pass `-DBUILD_TESTS=OFF` to skip them.
    | `--auto-interval <min>-<max>` | The interval range for automatic flips in ms, for example `100-300`. |
    | `--time-port <n>` | Port answering Latency Cam, default 48100: clock sync over UDP and uploads over TCP. Allow `latency-test.exe` through the firewall when asked. |
    | `--no-time-server` | Doesn't answer clock sync requests or accept uploads. |
-   | `--results <dir>` | Where Latency Cam uploads and their analysis go. The default is `Latency Cam` in Documents. |
+   | `--results <dir>` | Where Latency Cam uploads and their analysis go. The default is a `results` folder next to `latency-test.exe`, or `Latency Cam` in Documents when that can't be written. |
    | `--analyzer <path>`, `--python <path>` | The `analyze_video.py` and Python to run on uploads, if not found automatically. |
    | `--windowed` | Runs in a 1280x720 window instead of fullscreen. |
 

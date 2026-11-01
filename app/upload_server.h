@@ -21,7 +21,7 @@ namespace latency_test {
   struct analysis_config_t {
     std::filesystem::path results_dir;  ///< Where recordings and results are saved.
     std::filesystem::path python;  ///< Python interpreter; empty to find python.exe or py.exe on PATH.
-    std::filesystem::path analyzer;  ///< analyze_video.py; empty to look next to the executable.
+    std::filesystem::path analyzer;  ///< latency-analyzer.exe or analyze_video.py; empty to look next to the executable.
     std::filesystem::path host_log;  ///< The test app's input log, with its .frames.csv next to it.
     int width = 0;  ///< Pattern width in pixels, passed as --stream.
     int height = 0;  ///< Pattern height in pixels.

@@ -223,7 +223,7 @@ namespace latency_test {
     double auto_min_ms = 150;  ///< Shortest interval between automatic flips.
     double auto_max_ms = 400;  ///< Longest interval between automatic flips.
     int time_port = 48100;  ///< UDP port of the clock sync server and TCP port of the upload server; 0 turns both off.
-    std::string results_dir;  ///< Where Latency Cam uploads and their results go; empty picks "Latency Cam" in Documents.
+    std::string results_dir;  ///< Where Latency Cam uploads and their results go; empty picks a results folder next to the app.
     std::string analyzer_path;  ///< analyze_video.py; empty looks next to the executable.
     std::string python_path;  ///< Python interpreter; empty finds python.exe or py.exe on PATH.
   };
@@ -251,9 +251,11 @@ namespace latency_test {
     "  --time-port <n>  Port answering Latency Cam: clock sync on UDP and uploads on TCP\n"
     "                   (default 48100).\n"
     "  --no-time-server Do not answer clock sync requests or accept uploads.\n"
-    "  --results <dir>  Where uploaded recordings and their analysis go\n"
-    "                   (default: Documents\\Latency Cam).\n"
-    "  --analyzer <path> analyze_video.py to run on uploads (default: next to this app).\n"
+    "  --results <dir>  Where uploaded recordings and their analysis go (default: a\n"
+    "                   results folder next to this app, or Documents\\Latency Cam\n"
+    "                   when that can't be written).\n"
+    "  --analyzer <path> latency-analyzer.exe or analyze_video.py to run on uploads\n"
+    "                   (default: next to this app, preferring the exe).\n"
     "  --python <path>  Python to run it with (default: python.exe or py.exe on PATH).\n"
     "  --help           Show this text.\n"
     "\n"

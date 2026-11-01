@@ -1002,11 +1002,27 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
   }
 
   /**
-   * @brief Default folder for Latency Cam uploads: Latency Cam in the user's Documents.
+   * @brief Default folder for Latency Cam uploads: a results folder next to the executable, so a copied folder is
+   * self-contained, or Latency Cam in the user's Documents when that can't be written (e.g. under Program Files).
    *
    * @return The folder.
    */
   std::filesystem::path default_results_dir() {
+    wchar_t module[MAX_PATH] {};
+    GetModuleFileNameW(nullptr, module, MAX_PATH);
+    const auto portable = std::filesystem::path(module).parent_path() / L"results";
+    std::error_code error;
+    std::filesystem::create_directories(portable, error);
+    if (!error) {
+      // Creating the folder can succeed under virtualization while files can't be written, so try one
+      const auto probe = portable / L".write-test";
+      const HANDLE file = CreateFileW(probe.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE, nullptr);
+      if (file != INVALID_HANDLE_VALUE) {
+        CloseHandle(file);
+        return portable;
+      }
+    }
+
     PWSTR documents = nullptr;
     std::filesystem::path dir;
     if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Documents, 0, nullptr, &documents))) {

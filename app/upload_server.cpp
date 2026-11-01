@@ -159,7 +159,8 @@ namespace latency_test {
     }
 
     /**
-     * @brief Find analyze_video.py next to the executable, in analyzer\ beside it, or in ..\analyzer (a build folder).
+     * @brief Find the analyzer: the bundled latency-analyzer.exe next to the executable, which needs no Python, or else
+     * analyze_video.py next to it, in analyzer\ beside it, or in ..\analyzer (a build folder).
      *
      * @return Its path, or empty.
      */
@@ -167,7 +168,7 @@ namespace latency_test {
       wchar_t module[MAX_PATH] {};
       GetModuleFileNameW(nullptr, module, MAX_PATH);
       const std::filesystem::path dir = std::filesystem::path(module).parent_path();
-      for (const auto &candidate : {dir / "analyze_video.py", dir / "analyzer" / "analyze_video.py", dir.parent_path() / "analyzer" / "analyze_video.py"}) {
+      for (const auto &candidate : {dir / "latency-analyzer.exe", dir / "analyze_video.py", dir / "analyzer" / "analyze_video.py", dir.parent_path() / "analyzer" / "analyze_video.py"}) {
         std::error_code error;
         if (std::filesystem::is_regular_file(candidate, error)) {
           return candidate;
@@ -391,21 +392,29 @@ namespace latency_test {
     }
     const auto analyzer = config_.analyzer.empty() ? find_analyzer() : config_.analyzer;
     if (analyzer.empty()) {
-      error = "analyze_video.py was not found next to latency-test.exe; pass --analyzer";
+      error = "neither latency-analyzer.exe nor analyze_video.py was found next to latency-test.exe; pass --analyzer";
       return false;
     }
-    std::wstring python = config_.python.wstring();
-    std::wstring python_args;
-    if (python.empty()) {
-      python = search_path(L"python.exe").wstring();
+    // The bundled analyzer runs by itself; the script needs Python
+    std::wstring launcher;
+    if (analyzer.extension() == L".exe") {
+      launcher = quote(analyzer.wstring());
+    }
+    else {
+      std::wstring python = config_.python.wstring();
+      std::wstring python_args;
       if (python.empty()) {
-        python = search_path(L"py.exe").wstring();
-        python_args = L" -3";
+        python = search_path(L"python.exe").wstring();
+        if (python.empty()) {
+          python = search_path(L"py.exe").wstring();
+          python_args = L" -3";
+        }
       }
-    }
-    if (python.empty()) {
-      error = "Python was not found on PATH; pass --python";
-      return false;
+      if (python.empty()) {
+        error = "Python was not found on PATH; pass --python, or put latency-analyzer.exe next to latency-test.exe";
+        return false;
+      }
+      launcher = quote(python) + python_args + L" -u " + quote(analyzer.wstring());
     }
     if (config_.flush_logs) {
       config_.flush_logs();
@@ -430,7 +439,7 @@ namespace latency_test {
       return false;
     }
 
-    std::wstring command = quote(python) + python_args + L" -u " + quote(analyzer.wstring()) + L" " + quote(video.wstring()) +
+    std::wstring command = launcher + L" " + quote(video.wstring()) +
                            std::format(L" --stream {}x{}", config_.width, config_.height) + L" --host-log " + quote(host_log.wstring()) +
                            L" --out " + quote(config_.results_dir.wstring()) + L" --report";
     if (config_.fps > 0) {
