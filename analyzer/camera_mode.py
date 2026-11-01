@@ -15,12 +15,14 @@ from analyze_video import Canvas, compute_layout, describe, draw_regions, find_f
 from camera_timing import (
     assign_frames,
     decode_frame_changes,
+    edge_offsets,
     fit_clock,
     load_camera_timing,
     load_host_log,
     match_trigger_flips,
     normalize,
     pacing_stats,
+    patch_turned_white,
     trigger_crossing,
 )
 from report import write_camera_report
@@ -92,6 +94,21 @@ def run(args, timing_path):
         stack, valid, transforms = stack[:frames], valid[:frames], transforms[:frames]
     clock = PhotonClock(timing, fit, host, transforms, canvas, timing.height / size[1])
 
+    # The recording's span on the host clock, against the span the host log covers: the test app starts its logs
+    # afresh each time it runs, so a recording uploaded after a restart has nothing to match
+    recording_start = clock(0, layout["trigger"])
+    recording_end = clock(frames - 1, layout["trigger"])
+    log_start = float(host.frames[0, 2]) if len(host.frames) else 0.0
+    log_end = float(host.frames[-1, 2]) if len(host.frames) else 0.0
+    outside_log = None
+    if len(host.frames) and recording_end < log_start:
+        outside_log = (f"The recording ended {log_start - recording_end:.0f} s before this host log began, so the test "
+                       "app was restarted between recording and analysis. It starts its logs afresh each time, so "
+                       "keep it running until the analysis is done, and record again.")
+    elif len(host.frames) and recording_start > log_end:
+        outside_log = (f"The recording began {recording_start - log_end:.0f} s after this host log ended. Is the host "
+                       "log from the run that was filmed?")
+
     # Host present to photon for each trigger flip
     trigger_strip = layout["trigger"].inset(0.6, 0.25)
     trigger = region_series(stack, valid, canvas, trigger_strip)
@@ -123,19 +140,29 @@ def run(args, timing_path):
     times = [clock(position, layout["frame_bits"][bit]) for position, _, bit in arrivals]
     rows = assign_frames([(t, value) for t, (_, value, _) in zip(times, arrivals)], host.frames)
     seen = {}
-    for t, row in zip(times, rows):
+    for t, row, (_, _, bit) in zip(times, rows, arrivals):
         if row is None:
             continue
         number = int(host.frames[row, 0])
         if number not in seen or t < seen[number][0]:
-            seen[number] = (t, row)
+            seen[number] = (t, row, bit)
     frame_rows = []
     for number in sorted(seen):
-        t, row = seen[number]
+        t, row, bit = seen[number]
         present = host.frames[row, 2]
-        frame_rows.append({"frame": number, "present_s": present, "photon_s": t, "latency": (t - present) * 1000})
+        frame_rows.append({"frame": number, "present_s": present, "photon_s": t, "latency": (t - present) * 1000,
+                           "patch": bit, "rising": patch_turned_white(number, bit)})
+
+    # Each frame is timed by whichever patch changed with it, and the display reaches halfway sooner one way than the
+    # other, so pacing compares times corrected for each kind of edge's own offset
+    offsets, direction_offsets = edge_offsets([r["patch"] for r in frame_rows], [r["rising"] for r in frame_rows],
+                                              [r["latency"] for r in frame_rows])
+    for r in frame_rows:
+        r["edge_offset"] = offsets.get((r["patch"], r["rising"]), 0.0)
+        r["corrected_s"] = r["photon_s"] - r["edge_offset"] / 1000
+    edge_difference = direction_offsets[False] - direction_offsets[True]
     pacing = pacing_stats(
-        [r["frame"] for r in frame_rows], [r["photon_s"] for r in frame_rows], [r["present_s"] for r in frame_rows],
+        [r["frame"] for r in frame_rows], [r["corrected_s"] for r in frame_rows], [r["present_s"] for r in frame_rows],
         host.frames[:, 0].astype(np.int64),
     )
 
@@ -151,15 +178,17 @@ def run(args, timing_path):
     by_frame = {r["frame"]: r for r in frame_rows}
     with open(frames_csv, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["host_frame", "present_us", "photon_us", "present_to_photon_ms", "host_interval_ms", "client_interval_ms"])
+        writer.writerow(["host_frame", "present_us", "photon_us", "present_to_photon_ms", "patch", "edge", "edge_offset_ms",
+                         "host_interval_ms", "client_interval_ms"])
         for r in frame_rows:
             previous = by_frame.get(r["frame"] - 1)
             host_interval = client_interval = ""
             if previous:
                 host_interval = f"{(r['present_s'] - previous['present_s']) * 1000:.3f}"
-                client_interval = f"{(r['photon_s'] - previous['photon_s']) * 1000:.3f}"
+                # Corrected for each edge's offset, as the pacing figures are
+                client_interval = f"{(r['corrected_s'] - previous['corrected_s']) * 1000:.3f}"
             writer.writerow([r["frame"], f"{r['present_s'] * 1e6:.1f}", f"{r['photon_s'] * 1e6:.1f}", f"{r['latency']:.3f}",
-                             host_interval, client_interval])
+                             r["patch"], "rise" if r["rising"] else "fall", f"{r['edge_offset']:.3f}", host_interval, client_interval])
 
     regions_path = stem.with_name(stem.name + ".regions.png")
     if reference is not None:
@@ -170,6 +199,10 @@ def run(args, timing_path):
 
     flip_latencies = [r["latency"] for r in flip_rows]
     frame_latencies = [r["latency"] for r in frame_rows]
+    flip_rise = [r["latency"] for r in flip_rows if r["rising"]]
+    flip_fall = [r["latency"] for r in flip_rows if not r["rising"]]
+    frame_rise = [r["latency"] for r in frame_rows if r["rising"]]
+    frame_fall = [r["latency"] for r in frame_rows if not r["rising"]]
     print()
     print(f"Video:       {frames} frames at {timing.fps:g} fps = {frames / timing.fps:.2f} s; stream {width}x{height}")
     print(f"Bullseyes:   found in {found}/{frames} frames" + (f", {three} of them with one hidden and estimated" if three else ""))
@@ -179,16 +212,21 @@ def run(args, timing_path):
     print()
     print("Host present to photon, ms:")
     print(f"  trigger flips  {describe(flip_latencies)}")
+    print(f"    to white     {describe(flip_rise)}")
+    print(f"    to black     {describe(flip_fall)}")
     print(f"  every frame    {describe(frame_latencies)}")
+    print(f"    to white     {describe(frame_rise)}")
+    print(f"    to black     {describe(frame_fall)}")
     print()
     print(f"Pacing:      {pacing.frames_seen} frames seen of {pacing.frames_presented} presented in that time "
           f"({pacing.not_seen} not seen)")
     print(f"  host interval     {describe(pacing.host_intervals_ms)}")
     print(f"  client interval   {describe(pacing.client_intervals_ms)}")
     print(f"  client - host     {describe(pacing.mismatch_ms)}")
+    print(f"  (client times corrected for the display reaching halfway {edge_difference:+.2f} ms later going to black)")
     print(f"  uneven            {pacing.uneven} of {pacing.mismatch_ms.size} intervals off by more than a quarter frame")
 
-    notes = []
+    notes = [outside_log] if outside_log else []
     if fit.min_rtt_ms > 3:
         notes.append(f"The fastest clock sync round trip was {fit.min_rtt_ms:.1f} ms. The sync assumes the request and "
                      "reply took equally long, so every time here could be off by up to half that, the same way for "
@@ -196,12 +234,17 @@ def run(args, timing_path):
     if fit.residual_ms > 0.3:
         notes.append(f"The clock sync scattered by {fit.residual_ms:.2f} ms around its fit, so single measurements "
                      "carry that much noise.")
+    if abs(edge_difference) > 1:
+        slower = "white to black" if edge_difference > 0 else "black to white"
+        notes.append(f"The display takes {abs(edge_difference):.1f} ms longer to reach halfway going {slower}, so the "
+                     "latencies are shown for each direction, and the pacing figures are corrected for it: otherwise "
+                     "frames timed by opposite edges would look unevenly spaced.")
     if timing.unmatched:
         notes.append(f"{timing.unmatched} video frames had no capture result and were timed from their neighbours.")
     if seq_mismatch:
         notes.append(f"For {seq_mismatch} flips the input number on screen didn't match the host log's. Check that "
                      "the host log is from the run that was filmed.")
-    if flips and not flip_rows:
+    if flips and not flip_rows and not outside_log:
         notes.append("No trigger flip matched the host log. Check that the host log is from the run that was filmed "
                      "and that the phone synced with the same host.")
     if pacing.frames_presented and pacing.not_seen > pacing.frames_presented * 0.2:
@@ -223,7 +266,12 @@ def run(args, timing_path):
     summary_path.write_text(json.dumps({
         "video": args.video.name,
         "flips": stats(flip_latencies),
+        "flips_to_white": stats(flip_rise),
+        "flips_to_black": stats(flip_fall),
         "frames": stats(frame_latencies),
+        "frames_to_white": stats(frame_rise),
+        "frames_to_black": stats(frame_fall),
+        "edge_difference_ms": round(edge_difference, 3),
         "pacing": {
             "mismatch": stats(pacing.mismatch_ms),
             "host_interval": stats(pacing.host_intervals_ms),
@@ -255,6 +303,7 @@ def run(args, timing_path):
             "flips_seen": len(flips),
             "flips_logged": len(host.flips),
             "device": timing.info.get("device", ""),
+            "edge_difference": edge_difference,
         }
         write_camera_report(report_path, info, flip_rows, frame_rows, pacing, notes,
                             {"flips": flips_csv, "frames": frames_csv, "regions": regions_path})

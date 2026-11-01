@@ -227,6 +227,7 @@ svg .dot { fill: var(--series); }
 svg .dot.hollow { fill: var(--surface); stroke: var(--series); stroke-width: 2; }
 svg .hit:hover .dot { stroke: var(--text); stroke-width: 2; }
 svg .dots circle { fill: var(--series); fill-opacity: 0.6; }
+svg .dots circle.fall { fill: var(--series-2); }
 svg .seg.client { fill: var(--series-2); }
 svg .seg.stream { fill: var(--series); }
 svg .seg.stream.hollow { fill: var(--surface); stroke: var(--series); stroke-width: 2; }
@@ -402,13 +403,17 @@ def write_report(path, info, presses, notes, files):
 
 
 def time_scatter(points, max_points=4000):
-    """An SVG of (seconds, ms) points: each frame's present to photon time over the recording."""
+    """
+    An SVG of (seconds, ms) or (seconds, ms, turned white) points: each frame's present to photon time over the
+    recording, coloured by the direction its patch changed when that is given.
+    """
     width, height = 760, 260
     left, right, top, bottom = 44, 20, 14, 34
     if len(points) > max_points:
         points = points[:: int(np.ceil(len(points) / max_points))]
     xs = np.array([p[0] for p in points])
     ys = np.array([p[1] for p in points])
+    falls = [len(p) > 2 and not p[2] for p in points]
     span = max(float(xs.max() - xs.min()), 1e-3) if xs.size else 1.0
     x0 = float(xs.min()) if xs.size else 0.0
     highest = float(np.percentile(ys, 99.5)) if ys.size else 1.0
@@ -431,7 +436,8 @@ def time_scatter(points, max_points=4000):
         s += second_step
     parts.append(f'<text class="tick" x="{width - right}" y="{height - 4}" text-anchor="end">seconds</text>')
     parts.append(f'<line class="axis" x1="{left}" x2="{width - right}" y1="{y_of(0):.1f}" y2="{y_of(0):.1f}"/>')
-    parts.append('<g class="dots">' + "".join(f'<circle cx="{x_of(t):.1f}" cy="{y_of(v):.1f}" r="1.6"/>' for t, v in zip(xs, ys)) + "</g>")
+    parts.append('<g class="dots">' + "".join(f'<circle{" class=\"fall\"" if fall else ""} cx="{x_of(t):.1f}" cy="{y_of(v):.1f}" r="1.6"/>'
+                                              for t, v, fall in zip(xs, ys, falls)) + "</g>")
     if ys.size:
         y = y_of(float(np.median(ys)))
         parts.append(f'<line class="median" x1="{left}" x2="{width - right}" y1="{y:.1f}" y2="{y:.1f}"/>')
@@ -523,16 +529,21 @@ def write_camera_report(path, info, flips, frames, pacing, notes, files):
     if frames:
         zero = frames[0]["photon_s"]
         out.append("<h2>Present to photon, every frame, ms</h2>")
-        out.append(f'<div class="card">{time_scatter([(f["photon_s"] - zero, f["latency"]) for f in frames])}'
+        out.append(f'<div class="card">{time_scatter([(f["photon_s"] - zero, f["latency"], f.get("rising", True)) for f in frames])}'
                    '<p class="legend">Each dot is one host frame, timed by the frame number patch that changed with it. '
+                   '<svg width="12" height="12"><circle cx="6" cy="6" r="5" fill="var(--series)"/></svg> patch turned white &nbsp; '
+                   '<svg width="12" height="12"><circle cx="6" cy="6" r="5" fill="var(--series-2)"/></svg> patch turned black &nbsp; '
                    'Dashed: median.</p></div>')
 
     if pacing.mismatch_ms.size:
+        edge_difference = info.get("edge_difference", 0.0)
         out.append("<h2>Pacing: client interval &minus; host interval, ms</h2>")
         out.append(f'<div class="card">{histogram(pacing.mismatch_ms, label="client minus host, ms")}'
                    '<p class="legend">For each pair of consecutive frames, how much longer (right) or shorter (left) the client '
                    'showed the first than the host took between presenting them. Even pacing piles up at 0; a display at a '
-                   'fixed refresh rate spreads out by its refresh interval.</p></div>')
+                   'fixed refresh rate spreads out by its refresh interval. Client times are corrected for each kind of '
+                   f'edge reaching halfway at its own delay (here, going to black {edge_difference:+.2f} ms against going '
+                   'to white), so the display&#39;s rise and fall times don&#39;t count as uneven pacing.</p></div>')
 
     out.append("<h2>Statistics</h2>")
     out.append('<div class="card"><table><thead><tr><th>ms</th><th>n</th><th>median</th><th>mean</th><th>sd</th><th>p10</th><th>p90</th><th>min</th><th>max</th></tr></thead><tbody>')
@@ -540,8 +551,10 @@ def write_camera_report(path, info, flips, frames, pacing, notes, files):
     out.append(stats_row("present to photon, flips turning white", [f["latency"] for f in flips if f["rising"]]))
     out.append(stats_row("present to photon, flips turning black", [f["latency"] for f in flips if not f["rising"]]))
     out.append(stats_row("present to photon, every frame", frame_latencies))
+    out.append(stats_row("present to photon, frames turning white", [f["latency"] for f in frames if f.get("rising", True)]))
+    out.append(stats_row("present to photon, frames turning black", [f["latency"] for f in frames if not f.get("rising", True)]))
     out.append(stats_row("host present interval", pacing.host_intervals_ms))
-    out.append(stats_row("client display interval", pacing.client_intervals_ms))
+    out.append(stats_row("client display interval (corrected)", pacing.client_intervals_ms))
     out.append(stats_row("client minus host interval", pacing.mismatch_ms))
     out.append("</tbody></table></div>")
 

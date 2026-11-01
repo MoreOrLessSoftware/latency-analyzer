@@ -181,6 +181,11 @@ final class Uploader {
         JSONObject frames = summary.optJSONObject("frames");
         text.append(flips != null ? String.format(Locale.US, "\n  flips %.2f ms (%d)", flips.optDouble("median"), flips.optInt("n")) : "\n  flips: none matched");
         text.append(frames != null ? String.format(Locale.US, "\n  every frame %.2f ms (%d)", frames.optDouble("median"), frames.optInt("n")) : "\n  every frame: none read");
+        JSONObject toWhite = summary.optJSONObject("frames_to_white");
+        JSONObject toBlack = summary.optJSONObject("frames_to_black");
+        if (toWhite != null && toBlack != null) {
+            text.append(String.format(Locale.US, "\n    to white %.2f, to black %.2f ms", toWhite.optDouble("median"), toBlack.optDouble("median")));
+        }
         JSONObject pacing = summary.optJSONObject("pacing");
         if (pacing != null && pacing.optJSONObject("mismatch") != null) {
             JSONObject mismatch = pacing.optJSONObject("mismatch");

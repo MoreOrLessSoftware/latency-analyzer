@@ -20,12 +20,14 @@ from camera_timing import (  # noqa: E402
     bit_crossings,
     changed_bit,
     decode_frame_changes,
+    edge_offsets,
     fit_clock,
     gray_encode,
     load_camera_timing,
     load_host_log,
     match_trigger_flips,
     pacing_stats,
+    patch_turned_white,
     refine_crossing,
 )
 
@@ -205,32 +207,84 @@ class FrameDecodingTest(unittest.TestCase):
         self.assertEqual(pacing.not_seen, 1)
 
 
+class EdgeTest(unittest.TestCase):
+    def test_patch_direction_follows_the_gray_code(self):
+        for frame in range(1, 600):
+            bit = changed_bit(frame)
+            self.assertEqual(patch_turned_white(frame, bit), bool((gray_encode(frame & 255) >> (7 - bit)) & 1))
+
+    def test_offsets_per_patch_and_direction(self):
+        # Going to black reads 3 ms later; patch 7 reads 1 ms earlier on top; patch 2 has too few for its own offset
+        patches, rising, latencies = [], [], []
+        for k in range(200):
+            patch = 7 if k % 2 else 6
+            up = k % 4 < 2
+            patches.append(patch)
+            rising.append(up)
+            latencies.append(25 + (0 if up else 3) - (1 if patch == 7 else 0))
+        patches += [2, 2]
+        rising += [True, False]
+        latencies += [99, 99]
+        offsets, by_direction = edge_offsets(patches, rising, latencies)
+        self.assertAlmostEqual(by_direction[False] - by_direction[True], 3, delta=0.6)
+        self.assertAlmostEqual(offsets[(6, False)] - offsets[(6, True)], 3)
+        self.assertAlmostEqual(offsets[(6, True)] - offsets[(7, True)], 1)
+        self.assertEqual(offsets[(2, True)], by_direction[True])
+        self.assertEqual(edge_offsets([], [], []), ({}, {True: 0.0, False: 0.0}))
+
+
+def analyse_synthetic(test, directory, **recording):
+    """Make a synthetic recording, analyse it, and return the generator's result with the analyzer's CSVs."""
+    from synthetic_camera import make_recording
+
+    made = make_recording(directory, seconds=1.6, camera=(960, 540), **recording)
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "analyzer" / "analyze_video.py"), str(Path(directory) / "video.mp4"),
+         "--stream", "1280x720", "--stream-fps", "120", "--host-log", str(Path(directory) / "host.csv"), "--report"],
+        capture_output=True, text=True,
+    )
+    test.assertEqual(result.returncode, 0, result.stderr)
+    frames = list(csv.DictReader((Path(directory) / "video.frames.csv").read_text().splitlines()))
+    flips = list(csv.DictReader((Path(directory) / "video.flips.csv").read_text().splitlines()))
+    summary = json.loads((Path(directory) / "video.summary.json").read_text())
+    test.assertTrue((Path(directory) / "video.report.html").is_file())
+    return made, frames, flips, summary
+
+
+def truth_of(made, row):
+    """The true present to halfway time of a frame or flip row, for the direction its patch or trigger changed."""
+    return (made["truth_ms"] if row["edge"] == "rise" else made["truth_fall_ms"])[int(row["host_frame"])]
+
+
 class EndToEndTest(unittest.TestCase):
-    """Analyse a synthetic Latency Cam recording with known latencies."""
+    """Analyse synthetic Latency Cam recordings with known latencies."""
 
     def test_recovers_every_frames_latency(self):
-        from synthetic_camera import make_recording
-
         with tempfile.TemporaryDirectory() as d:
-            truth = make_recording(d, seconds=1.6, camera=(960, 540))["truth_ms"]
-            result = subprocess.run(
-                [sys.executable, str(ROOT / "analyzer" / "analyze_video.py"), str(Path(d) / "video.mp4"),
-                 "--stream", "1280x720", "--stream-fps", "120", "--host-log", str(Path(d) / "host.csv"), "--report"],
-                capture_output=True, text=True,
-            )
-            self.assertEqual(result.returncode, 0, result.stderr)
-            frames = list(csv.DictReader(open(Path(d) / "video.frames.csv")))
-            flips = list(csv.DictReader(open(Path(d) / "video.flips.csv")))
-            self.assertTrue((Path(d) / "video.report.html").is_file())
+            made, frames, flips, _ = analyse_synthetic(self, d)
 
-        errors = np.array([float(r["present_to_photon_ms"]) - truth[int(r["host_frame"])] for r in frames])
+        errors = np.array([float(r["present_to_photon_ms"]) - truth_of(made, r) for r in frames])
         self.assertGreater(len(frames), 150)
         # Averaging over the exposure and interpolating between camera frames read a realistic edge ~0.4 ms late
         self.assertLess(abs(np.median(errors)), 0.7)
         self.assertLess(np.percentile(np.abs(errors), 95), 1.2)
-        flip_errors = [float(r["present_to_photon_ms"]) - truth[int(r["host_frame"])] for r in flips]
+        flip_errors = [float(r["present_to_photon_ms"]) - truth_of(made, r) for r in flips]
         self.assertGreater(len(flips), 3)
         self.assertLess(max(abs(e) for e in flip_errors), 1.2)
+
+    def test_slow_falls_do_not_look_like_uneven_pacing(self):
+        # A display that takes twice as long going to black, with frames arriving exactly as evenly as presented
+        with tempfile.TemporaryDirectory() as d:
+            made, frames, flips, summary = analyse_synthetic(self, d, tau_ms=3.0, tau_fall_ms=6.0, latency_jitter_ms=0)
+
+        # Each direction is still measured against its own truth
+        errors = np.array([float(r["present_to_photon_ms"]) - truth_of(made, r) for r in frames])
+        self.assertLess(np.percentile(np.abs(errors), 95), 1.2)
+        self.assertAlmostEqual(summary["edge_difference_ms"], 3 * np.log(2), delta=0.6)
+        self.assertGreater(summary["frames_to_black"]["median"], summary["frames_to_white"]["median"] + 1.4)
+        # Corrected for the edges, pacing is about as even as the host's own presents (0.2 ms jitter each)
+        self.assertLess(summary["pacing"]["mismatch"]["sd"], 0.6)
+        self.assertEqual(summary["pacing"]["uneven"], 0)
 
 
 if __name__ == "__main__":

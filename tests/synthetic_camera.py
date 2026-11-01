@@ -47,7 +47,14 @@ def render_pattern(width, height, layout, frame, seq):
 
 
 def make_recording(out_dir, seconds=3.0, stream=(1280, 720), host_fps=120.0, camera=(1280, 720), base_latency_ms=40.0,
-                   tau_ms=4.0, exposure_ms=4.0, exposure_samples=4, drift_ppm=-18.0, seed=1):
+                   tau_ms=4.0, tau_fall_ms=None, latency_jitter_ms=4.0, exposure_ms=4.0, exposure_samples=4, drift_ppm=-18.0,
+                   seed=1):
+    """
+    tau_ms is the display's time constant going to white, and tau_fall_ms going to black (the same by default).
+    Returns the true present to halfway time of every host frame for each direction (truth_ms for white,
+    truth_fall_ms for black), the flips and the present times.
+    """
+    tau_fall_ms = tau_ms if tau_fall_ms is None else tau_fall_ms
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(seed)
@@ -65,9 +72,11 @@ def make_recording(out_dir, seconds=3.0, stream=(1280, 720), host_fps=120.0, cam
     seq_of_frame = np.zeros(count, np.int64)
     for k, frame in enumerate(flips):
         seq_of_frame[frame:] = k + 1
-    latency = base_latency_ms / 1000 + rng.uniform(0, 0.004, count)  # present to the display starting to change
+    # Present to the display starting to change, then to the halfway point each way
+    latency = base_latency_ms / 1000 + rng.uniform(0, latency_jitter_ms / 1000, count)
     appear = present + latency
-    truth = (latency + tau_ms / 1000 * np.log(2)) * 1000  # present to the halfway point
+    truth = (latency + tau_ms / 1000 * np.log(2)) * 1000
+    truth_fall = (latency + tau_fall_ms / 1000 * np.log(2)) * 1000
 
     header = (f"# sunshine latency-test\n# start_utc=2026-11-01T00:00:00.000Z start_filetime=0 start_qpc={START_QPC} "
               f"qpc_frequency={QPC_FREQUENCY}\n# width={width} height={height} refresh_hz=120 fps={host_fps} vsync=false "
@@ -120,14 +129,20 @@ def make_recording(out_dir, seconds=3.0, stream=(1280, 720), host_fps=120.0, cam
         image = np.zeros((screen[3], screen[2]), np.float32)
         for sample in range(exposure_samples):
             row_host = host_of(row_start + exposure_ns * (sample + 0.5) / exposure_samples)
-            # Each row shows every frame's exponential step since it appeared
+            # Each row shows every frame's exponential step since it appeared, at the time constant of its direction
             newest = np.searchsorted(appear, row_host.max())
             shown = None
             for n in range(max(newest - 8, 0), newest):
-                age = row_host - appear[n]
-                weight = np.where(age > 0, 1 - np.exp(-np.maximum(age, 0) / (tau_ms / 1000)), 0.0)
                 current = pattern(n)
-                shown = current if shown is None else current * weight[:, None] + shown * (1 - weight[:, None])
+                if shown is None:
+                    shown = current
+                    continue
+                age = np.maximum(row_host - appear[n], 0)[:, None]
+                if tau_ms == tau_fall_ms:
+                    weight = 1 - np.exp(-age / (tau_ms / 1000))  # one curve for every pixel: much quicker
+                else:
+                    weight = 1 - np.exp(-age / (np.where(current > shown, tau_ms, tau_fall_ms) / 1000))
+                shown = current * weight + shown * (1 - weight)
             image += shown / exposure_samples
         frame_image = np.full((cam_h, cam_w), 0.08, np.float32)
         frame_image[screen[1]:screen[1] + screen[3], screen[0]:screen[0] + screen[2]] = 0.1 + 0.8 * image
@@ -160,7 +175,7 @@ def make_recording(out_dir, seconds=3.0, stream=(1280, 720), host_fps=120.0, cam
         "sync": {"host": "10.0.0.29", "qpc_frequency": QPC_FREQUENCY, "fields": ["t1", "t2", "t3", "t4"], "samples": samples},
     }
     (out_dir / "video.camera.json").write_text(json.dumps(timing))
-    return {"truth_ms": truth, "flips": flips, "present": present}
+    return {"truth_ms": truth, "truth_fall_ms": truth_fall, "flips": flips, "present": present}
 
 
 if __name__ == "__main__":

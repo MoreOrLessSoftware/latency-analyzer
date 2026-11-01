@@ -468,3 +468,35 @@ def pacing_stats(frame_numbers, photon_s, present_s, presented_numbers):
         mismatch_ms=mismatch,
         uneven=int(np.sum(np.abs(mismatch) > threshold)) if host.size else 0,
     )
+
+
+def patch_turned_white(frame, bit, bits=8):
+    """Whether the frame number patch that changed for this frame went from black to white."""
+    return bool((gray_encode(frame & ((1 << bits) - 1)) >> (bits - 1 - bit)) & 1)
+
+
+def edge_offsets(patches, rising, latencies, min_count=8):
+    """
+    How much later than the overall median each kind of edge reaches halfway. Displays take longer to settle one way
+    than the other (often 2-3 ms between white to black and black to white), and each frame is timed by whichever
+    patch changed with it, so without this the frame-to-frame intervals swing by that difference even when frames
+    arrive evenly. The offset is the median latency of each patch and direction, or of the direction alone when a
+    patch has fewer than min_count of them.
+    Returns a dict from (patch, rising) to its offset in ms, and the offsets of the two directions.
+    """
+    latencies = np.asarray(latencies, dtype=np.float64)
+    patches = np.asarray(patches)
+    rising = np.asarray(rising, dtype=bool)
+    if latencies.size == 0:
+        return {}, {True: 0.0, False: 0.0}
+    overall = float(np.median(latencies))
+    by_direction = {}
+    for direction in (True, False):
+        values = latencies[rising == direction]
+        by_direction[direction] = float(np.median(values)) - overall if values.size else 0.0
+    offsets = {}
+    for patch in np.unique(patches):
+        for direction in (True, False):
+            values = latencies[(patches == patch) & (rising == direction)]
+            offsets[(int(patch), direction)] = float(np.median(values)) - overall if values.size >= min_count else by_direction[direction]
+    return offsets, by_direction
