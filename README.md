@@ -41,7 +41,7 @@ the key press to the trigger being presented.
 
 ## Latency Cam: present to photon and pacing
 
-1. **Host:** stream `latency-test.exe --auto`. The trigger then flips on its own, and the app answers Latency Cam on
+1. **Host:** stream `latency-test.exe`. The trigger flips on its own (Space toggles it), and the app answers Latency Cam on
    port 48100: clock sync over UDP and uploads over TCP. Allow it through the firewall for both when asked. The host
    needs Python with `numpy` and `opencv-python-headless`, and `analyze_video.py` next to `latency-test.exe` (as
    installed) or in `..\analyzer` (in a build folder); `--analyzer` and `--python` point elsewhere.
@@ -138,8 +138,8 @@ GoogleTest at configure time; pass `-DBUILD_TESTS=OFF` to skip them.
    | `--no-noise` | Flat gray background, so frames stay small (same as `--noise 0`). |
    | `--fps <n>` | Background update rate. The default is the display's refresh rate. |
    | `--log <path>` | CSV log of each input and the frame that answered it, timed with the host's QPC. The default is `%TEMP%\sunshine_latency_test.csv`. Every frame's render and present times go to the same name ending `.frames.csv`. |
-   | `--auto` | Flips the trigger on its own every 150–400 ms, at random, as well as on key presses. Automatic flips land on the next scheduled frame, so the frame rate stays steady. |
-   | `--auto-interval <min>-<max>` | The interval range for `--auto` in ms, for example `100-300`. Implies `--auto`. |
+   | `--no-auto` | Starts without automatic flips. By default the trigger flips on its own every 150–400 ms, at random, as well as on key presses; automatic flips land on the next scheduled frame, so the frame rate stays steady. **Space** toggles them while running. Use `--no-auto` for the marker test. |
+   | `--auto-interval <min>-<max>` | The interval range for automatic flips in ms, for example `100-300`. |
    | `--time-port <n>` | Port answering Latency Cam, default 48100: clock sync over UDP and uploads over TCP. Allow `latency-test.exe` through the firewall when asked. |
    | `--no-time-server` | Doesn't answer clock sync requests or accept uploads. |
    | `--results <dir>` | Where Latency Cam uploads and their analysis go. The default is `Latency Cam` in Documents. |
@@ -157,14 +157,18 @@ GoogleTest at configure time; pass `-DBUILD_TESTS=OFF` to skip them.
 
    By default the app presents without v-sync, with tearing. It redraws the background on a timer at `--fps`, or at
    the display's refresh rate without it. A key press is answered straight away with an extra frame, so the presented
-   rate runs a little above the target while keys are pressed. Automatic flips (`--auto`) are shown on the next
-   scheduled frame instead, which keeps the cadence steady for measuring pacing.
+   rate runs a little above the target while keys are pressed. Automatic flips are shown on the next scheduled frame
+   instead, which keeps the cadence steady for measuring pacing.
 
-   Press **V** (on the host or through Moonlight) to toggle v-sync; it doesn't count as a flip. With v-sync on and no
+   Press **Space** to toggle automatic flips and **V** to toggle v-sync, on the host or through Moonlight; neither
+   counts as a flip, and both changes are noted in the logs (`# auto=`, `# vsync=`). While Moonlight's latency marker
+   is on, Moonlight keeps Space for its own test, so toggle automatic flips before turning the marker on. With v-sync on and no
    `--fps`, the display sets the pace: each present waits for the display to take the previous frame, so frames
    follow its refresh instead of the app's timer. That adds about a frame of latency. Each frame's line in
    `.frames.csv` records whether v-sync was on, and each toggle adds a `# vsync=` comment line.
-3. Press **Ctrl+Alt+Shift+T** in Moonlight to turn the marker on. It appears a quarter of the way across the screen,
+3. For the marker test, automatic flips must be off: start the app with `--no-auto`, or press Space before the next
+   step. Otherwise the trigger flips without a press and the pairing goes wrong.
+4. Press **Ctrl+Alt+Shift+T** in Moonlight to turn the marker on. It appears a quarter of the way across the screen,
    on the same rows as the trigger, with a timer under it showing the time since it last flipped.
 
 ## Record

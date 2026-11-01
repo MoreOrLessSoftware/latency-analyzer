@@ -214,12 +214,18 @@ TEST(LatencyTestPatternTest, ParseOptionsReadsAutoAndTimeServer) {
   std::string error;
   auto options = parse({}, error);
   ASSERT_TRUE(options);
-  EXPECT_FALSE(options->auto_flip);
+  EXPECT_TRUE(options->auto_flip);
   EXPECT_DOUBLE_EQ(options->auto_min_ms, 150);
   EXPECT_DOUBLE_EQ(options->auto_max_ms, 400);
   EXPECT_EQ(options->time_port, 48100);
 
-  EXPECT_TRUE(parse({"--auto"}, error)->auto_flip);
+  EXPECT_FALSE(parse({"--no-auto"}, error)->auto_flip);
+  EXPECT_TRUE(parse({"--no-auto", "--auto"}, error)->auto_flip);
+  // The interval can be set while starting with automatic flips off, for Space to turn on later
+  options = parse({"--no-auto", "--auto-interval", "50-60"}, error);
+  ASSERT_TRUE(options) << error;
+  EXPECT_FALSE(options->auto_flip);
+  EXPECT_DOUBLE_EQ(options->auto_min_ms, 50);
   options = parse({"--auto-interval", "100-300", "--time-port", "50000"}, error);
   ASSERT_TRUE(options) << error;
   EXPECT_TRUE(options->auto_flip);
@@ -282,7 +288,7 @@ TEST(LatencyTestPatternTest, StatusTextDescribesPresentation) {
   status.latency_cam_port = 48100;
   EXPECT_EQ(latency_test::status_text(status),
             "120 fps (the display's refresh) \xC2\xB7 display 120 Hz \xC2\xB7 v-sync off, tearing (V toggles)\n"
-            "presenting 119.8 fps \xC2\xB7 auto flips every 150\xE2\x80\x93" "400 ms \xC2\xB7 Latency Cam port 48100");
+            "presenting 119.8 fps \xC2\xB7 auto flips every 150\xE2\x80\x93" "400 ms (Space toggles) \xC2\xB7 Latency Cam port 48100");
 
   status.fps = 117.5;
   status.fps_from_display = false;
@@ -293,7 +299,7 @@ TEST(LatencyTestPatternTest, StatusTextDescribesPresentation) {
   status.latency_cam_port = 0;
   EXPECT_EQ(latency_test::status_text(status),
             "117.5 fps (--fps) \xC2\xB7 display rate unknown \xC2\xB7 v-sync on (V toggles)\n"
-            "presenting \xE2\x80\xA6 \xC2\xB7 flips on key presses \xC2\xB7 Latency Cam off");
+            "presenting \xE2\x80\xA6 \xC2\xB7 auto flips off (Space toggles) \xC2\xB7 Latency Cam off");
 
   // At the display's own rate, v-sync lets the display set the pace
   status.fps_from_display = true;

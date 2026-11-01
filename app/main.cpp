@@ -222,6 +222,7 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
     bool running = true;  ///< Cleared when the window closes.
     bool resize_pending = false;  ///< Set when the window size changed.
     bool toggle_vsync = false;  ///< Set when V was pressed.
+    bool toggle_auto = false;  ///< Set when Space was pressed.
     int width {};  ///< Current back buffer width.
     int height {};  ///< Current back buffer height.
     latency_test::layout_t layout {};  ///< Pattern layout for the current size.
@@ -483,11 +484,11 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
         // Esc quits instead of counting as an input
         PostMessageW(app.hwnd, WM_CLOSE, 0, 0);
       }
-      else if (vkey == 'V') {
-        // V toggles v-sync instead of counting as an input
+      else if (vkey == 'V' || vkey == VK_SPACE) {
+        // V toggles v-sync and Space automatic flips, instead of counting as inputs
         if (!app.keys_down[vkey]) {
           app.keys_down[vkey] = true;
-          app.toggle_vsync = true;
+          (vkey == 'V' ? app.toggle_vsync : app.toggle_auto) = true;
         }
       }
       else if (!app.keys_down[vkey]) {
@@ -584,9 +585,9 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
       if (SUCCEEDED(app.d2d->CreateDxgiSurfaceRenderTarget(surface.Get(), &properties, &app.text_target))) {
         app.text_target->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::White), &app.white);
         app.text_target->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::Black), &app.black);
-        // Two lines in the band, each about 75 characters across it
+        // Two lines in the band, each up to about 90 characters across it
         const auto &info = app.layout.info;
-        const float size = std::max(8.0f, std::min(info.h * 0.3f, info.w / 40.0f));
+        const float size = std::max(8.0f, std::min(info.h * 0.3f, info.w / 48.0f));
         app.dwrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, size, L"en-us", &app.text_format);
         if (app.text_format) {
           app.text_format->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
@@ -982,6 +983,28 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
   }
 
   /**
+   * @brief Turn automatic flips on or off, and note the change in both logs and on screen.
+   *
+   * @param app App state.
+   * @param on Whether the trigger should flip on its own.
+   * @param now Current QueryPerformanceCounter value; the first flip comes one interval after it.
+   */
+  void set_auto_flip(app_t &app, bool on, std::int64_t now) {
+    app.options.auto_flip = on;
+    app.status.auto_flip = on;
+    app.status_text.clear();
+    if (on) {
+      schedule_auto_flip(app, now);
+    }
+    const std::string note = std::format("# auto={} from frame {}\n", on ? 1 : 0, app.frame);
+    for (std::FILE *log : {app.log, app.frames_log}) {
+      if (log) {
+        std::fputs(note.c_str(), log);
+      }
+    }
+  }
+
+  /**
    * @brief Run the test app.
    *
    * @param options Command line options.
@@ -1122,6 +1145,10 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
       if (app.toggle_vsync) {
         app.toggle_vsync = false;
         set_vsync(app, !app.options.vsync);
+      }
+      if (app.toggle_auto) {
+        app.toggle_auto = false;
+        set_auto_flip(app, !app.options.auto_flip, qpc_now());
       }
 
       // Inputs are answered right away; the background only moves on at the chosen rate. With v-sync at the

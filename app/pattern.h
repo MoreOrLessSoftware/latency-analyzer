@@ -219,7 +219,7 @@ namespace latency_test {
     double noise = 0.5;  ///< Background noise amplitude, 0 (flat gray) to 1 (full range).
     double fps = 0;  ///< Background update rate; 0 matches the display refresh rate.
     std::string log_path;  ///< CSV log path; empty picks a file in the temp directory.
-    bool auto_flip = false;  ///< Flip the trigger on its own at random intervals.
+    bool auto_flip = true;  ///< Flip the trigger on its own at random intervals.
     double auto_min_ms = 150;  ///< Shortest interval between automatic flips.
     double auto_max_ms = 400;  ///< Longest interval between automatic flips.
     int time_port = 48100;  ///< UDP port of the clock sync server and TCP port of the upload server; 0 turns both off.
@@ -243,10 +243,11 @@ namespace latency_test {
     "  --log <path>     CSV log of inputs and the frames that answered them\n"
     "                   (default: %TEMP%\\sunshine_latency_test.csv). Every frame's\n"
     "                   present time goes to the same name ending .frames.csv.\n"
-    "  --auto           Flip the trigger on its own every 150 to 400 ms, at random, on\n"
-    "                   the next scheduled frame (key presses still get an extra frame).\n"
+    "  --no-auto        Start without automatic flips. By default the trigger flips on\n"
+    "                   its own every 150 to 400 ms, at random, on the next scheduled\n"
+    "                   frame (key presses still get an extra frame). Space toggles it.\n"
     "  --auto-interval <min>-<max>\n"
-    "                   Interval range for --auto in ms, e.g. 100-300 (implies --auto).\n"
+    "                   Interval range for automatic flips in ms, e.g. 100-300.\n"
     "  --time-port <n>  Port answering Latency Cam: clock sync on UDP and uploads on TCP\n"
     "                   (default 48100).\n"
     "  --no-time-server Do not answer clock sync requests or accept uploads.\n"
@@ -256,8 +257,8 @@ namespace latency_test {
     "  --python <path>  Python to run it with (default: python.exe or py.exe on PATH).\n"
     "  --help           Show this text.\n"
     "\n"
-    "Any key press (except Esc and V) or mouse button press flips the trigger patch,\n"
-    "as does --auto. V toggles v-sync.\n"
+    "Any key press (except Esc, V and Space) or mouse button press flips the trigger\n"
+    "patch, as do the automatic flips. Space toggles automatic flips; V toggles v-sync.\n"
     "The band at the bottom shows the host clock and the time since the last input, in ms.\n"
     "Close with Esc, Alt+F4 or by ending the stream.\n";
 
@@ -307,7 +308,11 @@ namespace latency_test {
         options.noise = 0;
       }
       else if (arg == "--auto") {
+        // The default now; still accepted so older command lines work
         options.auto_flip = true;
+      }
+      else if (arg == "--no-auto") {
+        options.auto_flip = false;
       }
       else if (arg == "--no-time-server") {
         options.time_port = 0;
@@ -324,7 +329,6 @@ namespace latency_test {
           error = "--auto-interval must be <min>-<max> in ms, between 20 and 10000";
           return std::nullopt;
         }
-        options.auto_flip = true;
         options.auto_min_ms = *low;
         options.auto_max_ms = *high;
       }
@@ -413,7 +417,8 @@ namespace latency_test {
     }
     text += " (V toggles)\n";
     text += status.measured_fps > 0 ? "presenting " + number(status.measured_fps) + " fps" : "presenting \xE2\x80\xA6";
-    text += status.auto_flip ? " \xC2\xB7 auto flips every " + number(status.auto_min_ms) + "\xE2\x80\x93" + number(status.auto_max_ms) + " ms" : " \xC2\xB7 flips on key presses";
+    text += status.auto_flip ? " \xC2\xB7 auto flips every " + number(status.auto_min_ms) + "\xE2\x80\x93" + number(status.auto_max_ms) + " ms" : " \xC2\xB7 auto flips off";
+    text += " (Space toggles)";
     text += status.latency_cam_port > 0 ? " \xC2\xB7 Latency Cam port " + std::to_string(status.latency_cam_port) : " \xC2\xB7 Latency Cam off";
     return text;
   }
