@@ -698,14 +698,35 @@ def parse_size(text):
         raise argparse.ArgumentTypeError(f"expected WIDTHxHEIGHT, got {text!r}")
 
 
+def find_recording(folder):
+    """
+    The recording in a results folder: NAME.mp4 in a folder named NAME, as uploads are saved, or else the only video
+    with Latency Cam's timing file next to it.
+    """
+    named = folder / (folder.name + ".mp4")
+    if named.is_file():
+        return named
+    videos = [v for v in sorted(folder.glob("*.mp4")) if v.with_name(v.stem + ".camera.json").is_file()]
+    if len(videos) == 1:
+        return videos[0]
+    if not videos:
+        sys.exit(f"No recording in {folder}: expected {named.name}, or a video with its .camera.json next to it")
+    sys.exit(f"{folder} holds several recordings ({', '.join(v.name for v in videos)}); give the one to analyse")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("video", type=Path)
-    parser.add_argument("--stream", type=parse_size, required=True, help="stream resolution, e.g. 2560x1440")
+    parser.add_argument("video", type=Path,
+                        help="the video, or a results folder from an upload (results\\NAME) to analyse it again")
+    parser.add_argument("--stream", type=parse_size,
+                        help="stream resolution, e.g. 2560x1440 (default for Latency Cam videos: the test app's, from "
+                             "its log)")
     parser.add_argument("--fps", type=float, help="camera capture rate (default: read from the file)")
     parser.add_argument("--max-frames", type=int, help="only analyse the first N frames")
     parser.add_argument("--out", type=Path, help="directory for the CSV and debug images (default: next to the video)")
-    parser.add_argument("--stream-fps", type=float, help="stream frame rate, to express latencies in stream frames")
+    parser.add_argument("--stream-fps", type=float,
+                        help="stream frame rate, to express latencies in stream frames (default for Latency Cam videos: "
+                             "the rate the test app presented at while filming)")
     parser.add_argument("--report", action="store_true", help="also write an HTML report, VIDEO.report.html")
     parser.add_argument("--marker-log", "--moonlight-log", dest="marker_log", type=Path,
                         help="Moonlight's latency test CSV, a folder of them, or its log, to add the marker's own delay "
@@ -724,6 +745,10 @@ def main():
                         help="Moonlight's Moonlight-pacing-*.csv from the filmed run (default: any in the video's or "
                              "output folder)")
     args = parser.parse_args()
+    if args.video.is_dir():
+        # A results folder: analyse its recording again, writing the results back into it
+        args.video = find_recording(args.video)
+        args.report = True
     if not args.video.is_file():
         sys.exit(f"No such file: {args.video}")
     timing_path = args.camera_timing or args.video.with_name(args.video.stem + ".camera.json")
@@ -743,6 +768,8 @@ def main():
     if fps < 100:
         print(f"warning: capture rate is only {fps:.0f} fps ({fps_source}); pass --fps if that is the playback rate", file=sys.stderr)
 
+    if args.stream is None:
+        sys.exit("Pass --stream with the stream resolution, e.g. --stream 2560x1440")
     width, height = args.stream
     layout = compute_layout(width, height)
     canvas = Canvas(width, height, layout)
@@ -966,5 +993,96 @@ def main():
         print(f"Wrote {report_path}")
 
 
+# ---------------------------------------------------------------------------------------------------------------------
+# Run without arguments: pick a results folder to analyse again
+
+
+def results_roots():
+    """Where uploaded results may be: next to this program (or the bundled exe), the current folder, and Documents."""
+    here = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
+    roots = [here / "results", here.parent / "results", Path.cwd() / "results", Path.home() / "Documents" / "Latency Cam"]
+    seen = []
+    for root in roots:
+        try:
+            resolved = root.resolve()
+        except OSError:
+            continue
+        if resolved.is_dir() and resolved not in seen:
+            seen.append(resolved)
+    return seen
+
+
+def list_runs(roots):
+    """Every run folder (one holding NAME.mp4 and NAME.camera.json) under the roots, newest first."""
+    runs = []
+    for root in roots:
+        for folder in root.iterdir():
+            if folder.is_dir() and (folder / f"{folder.name}.mp4").is_file() and (folder / f"{folder.name}.camera.json").is_file():
+                runs.append(folder)
+    return sorted(runs, key=lambda f: (f / f"{f.name}.mp4").stat().st_mtime, reverse=True)
+
+
+def describe_run(folder):
+    """One line about a run folder: when it was recorded, its result if analysed, and which logs it has."""
+    import datetime
+
+    when = datetime.datetime.fromtimestamp((folder / f"{folder.name}.mp4").stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+    result = "not analysed"
+    summary = folder / f"{folder.name}.summary.json"
+    if summary.is_file():
+        try:
+            frames = json.loads(summary.read_text(encoding="utf-8")).get("frames")
+            result = f"host present -> photon {frames['median']:.1f} ms" if frames else "analysed, no frames read"
+        except (ValueError, KeyError, TypeError):
+            result = "analysed"
+    logs = [label for label, pattern in (("Sunshine log", "sunshine-frames-*.csv"), ("Moonlight trace", "Moonlight-pacing-*.csv"))
+            if any(folder.glob(pattern))]
+    return f"{folder.name}  {when}  {result}" + (f"  [{', '.join(logs)}]" if logs else "")
+
+
+def choose_run():
+    """List the run folders and ask which to analyse again; the chosen folder, or None."""
+    roots = results_roots()
+    runs = list_runs(roots)
+    if not runs:
+        print("\nNo results folders found in: " + (", ".join(str(r) for r in roots) or "results next to this program"))
+        return None
+    print("\nResults to analyse again, newest first:")
+    for number, folder in enumerate(runs, 1):
+        print(f"  {number:2d}. {describe_run(folder)}")
+    while True:
+        try:
+            answer = input("\nNumber to analyse again (Enter to quit): ").strip()
+        except EOFError:
+            return None
+        if not answer:
+            return None
+        if answer.isdigit() and 1 <= int(answer) <= len(runs):
+            return runs[int(answer) - 1]
+        print(f"Enter a number from 1 to {len(runs)}.")
+
+
+def interactive():
+    """Without arguments: show the usage, then offer the results folders to analyse again."""
+    print("usage: latency-analyzer VIDEO_OR_RESULTS_FOLDER [options]   (--help lists the options)")
+    folder = choose_run() if sys.stdin.isatty() else None
+    if folder is not None:
+        sys.argv = [sys.argv[0], str(folder)]
+        try:
+            main()
+        except SystemExit as error:
+            if error.code not in (None, 0):
+                print(error.code if isinstance(error.code, str) else f"Stopped ({error.code})")
+    # A window opened by double-clicking closes as soon as the program ends, so wait
+    if sys.stdin.isatty():
+        try:
+            input("\nPress Enter to close.")
+        except EOFError:
+            pass
+
+
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) == 1:
+        interactive()
+    else:
+        main()

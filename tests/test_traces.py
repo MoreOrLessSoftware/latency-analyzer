@@ -30,7 +30,9 @@ def make_run(count=40, photon_ms=20.0, capture_ms=0.7, through_ms=11.0):
         present_client = capture_us + through_ms * 1000 + CLIENT_OFFSET_US
         moonlight.append({"host_us": str(rtp), "first_packet_us": f"{present_client - 9540:.0f}",
                           "last_packet_us": f"{present_client - 6410:.0f}", "decoded_us": f"{present_client - 5270:.0f}",
-                          "arrival_us": f"{present_client - 1130:.0f}", "present_us": f"{present_client:.0f}"})
+                          "arrival_us": f"{present_client - 1130:.0f}", "present_us": f"{present_client:.0f}",
+                          # Moonlight's capture to present, from its clock sync
+                          "capture_to_present_us": f"{through_ms * 1000:.0f}"})
     # Captures of other desktop frames, between the test app's, are skipped by the matching
     sunshine.append({"rtp_us": "1", "present_us": f"{START_US + 0.5e6:.0f}", "encoded_us": "4000", "sent_us": "4000"})
     return frames, sunshine, moonlight
@@ -55,13 +57,17 @@ class TracesTest(unittest.TestCase):
         self.assertEqual(len(joined), 40)
         pipeline = traces.analyse(joined, len(frames), "s.csv", "m.csv")
         stages = {s.label: s.stats() for s in pipeline.stages}
-        self.assertAlmostEqual(stages["app present call -> Sunshine capture"]["median"], 0.7, places=2)
+        self.assertAlmostEqual(stages["host present -> capture"]["median"], 0.7, places=2)
         self.assertAlmostEqual(stages["capture -> encoded"]["median"], 4.09)
         self.assertAlmostEqual(stages["first packet -> last packet"]["median"], 3.13, places=2)
         self.assertAlmostEqual(stages["handed over -> GPU decode finished"]["median"], 4.14, places=2)
-        self.assertAlmostEqual(stages["first packet -> present"]["median"], 9.54, places=2)
+        self.assertAlmostEqual(stages["first packet -> client present"]["median"], 9.54, places=2)
         self.assertAlmostEqual(stages["capture -> photon, to white"]["median"], 19.3, places=2)
-        self.assertEqual(stages["app present -> photon, to black"]["n"], 20)
+        self.assertEqual(stages["host present -> photon, to black"]["n"], 20)
+        # Moonlight's capture to present, and what the camera adds after it, add up to capture to photon
+        self.assertAlmostEqual(stages["capture -> client present (Moonlight's capture to present)"]["median"], 11.0, places=2)
+        self.assertAlmostEqual(stages["client present -> photon, to white"]["median"], 19.3 - 11.0, places=2)
+        self.assertAlmostEqual(stages["capture -> first packet"]["median"], 11.0 - 9.54, places=2)
         # Every frame keeps the same timing, so the cross-checks show no spread at all
         self.assertLess(pipeline.checks["moonlight_capture_to_present_sd_ms"], 0.01)
         self.assertLess(pipeline.checks["photon_minus_present_sd_to_white_ms"], 0.01)
@@ -75,7 +81,7 @@ class TracesTest(unittest.TestCase):
         pipeline = traces.analyse(traces.join(frames, START_US, sunshine, moonlight), len(frames), "s", "m")
         labels = [s.label for s in pipeline.stages]
         self.assertNotIn("last packet -> decoder hands it over", labels)
-        self.assertIn("first packet -> present", labels)
+        self.assertIn("first packet -> client present", labels)
 
     def test_says_when_nothing_joins_or_the_clocks_disagree(self):
         frames, sunshine, moonlight = make_run()
@@ -116,7 +122,7 @@ class TracesTest(unittest.TestCase):
         pipeline = traces.analyse(traces.join(frames, START_US, sunshine, None), len(frames), "s.csv", None)
         labels = [s.label for s in pipeline.stages]
         self.assertEqual(pipeline.joined, 40)
-        self.assertIn("app present call -> Sunshine capture", labels)
+        self.assertIn("host present -> capture", labels)
         self.assertIn("capture -> photon, to white", labels)
         self.assertFalse(any(s.source == "Moonlight" for s in pipeline.stages))
         self.assertEqual(pipeline.checks, {})
@@ -138,8 +144,8 @@ class TracesTest(unittest.TestCase):
         # Each frame got its own row
         self.assertTrue(all(j["moonlight"] is moonlight[i] for i, j in enumerate(joined)))
         pipeline = traces.analyse(joined, len(frames), None, "m.csv")
-        self.assertIn("first packet -> present", [s.label for s in pipeline.stages])
-        self.assertNotIn("app present call -> Sunshine capture", [s.label for s in pipeline.stages])
+        self.assertIn("first packet -> client present", [s.label for s in pipeline.stages])
+        self.assertNotIn("host present -> capture", [s.label for s in pipeline.stages])
         self.assertLess(pipeline.checks["moonlight_alignment_error_ms"], 0.2)
         self.assertEqual(pipeline.notes, [])
 
@@ -148,6 +154,31 @@ class TracesTest(unittest.TestCase):
         frames, _, moonlight = make_run(count=100)
         pipeline = traces.analyse(traces.join(frames, START_US, None, moonlight), len(frames), None, "m.csv")
         self.assertTrue(any("a frame off" in note for note in pipeline.notes))
+
+    def test_report_shows_moonlights_capture_to_present(self):
+        # The report's headline tiles with every stage present, Moonlight's capture to present included
+        import types
+
+        from camera_timing import pacing_stats
+        from report import write_camera_report
+
+        frames, sunshine, moonlight = make_run()
+        pipeline = traces.analyse(traces.join(frames, START_US, sunshine, moonlight), len(frames), "s.csv", "m.csv")
+        fit = types.SimpleNamespace(windows=10, samples=100, min_rtt_ms=2.0, median_rtt_ms=4.0, residual_ms=0.1, drift_ppm=20.0)
+        info = {"video": "run.mp4", "frames": 100, "fps": 240.0, "stream": (2560, 1440), "stream_fps": 97.0, "found": 100,
+                "estimated": 0, "fit": fit, "flips_seen": 0, "flips_logged": 0, "device": "Test", "edge_difference": 0.0,
+                "pipeline": pipeline}
+        frame_rows = [{"frame": f["frame"], "photon_s": f["photon_s"], "latency": f["latency"], "rising": f["rising"]} for f in frames]
+        pacing = pacing_stats([f["frame"] for f in frames], [f["photon_s"] for f in frames], [f["present_s"] for f in frames],
+                              [f["frame"] for f in frames])
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "run.report.html"
+            write_camera_report(path, info, [], frame_rows, pacing, [],
+                                {"flips": Path(d) / "a.csv", "frames": Path(d) / "b.csv", "regions": Path(d) / "c.png"})
+            html = path.read_text(encoding="utf-8")
+        self.assertIn("Capture &rarr; client present (Moonlight&#39;s capture to present)", html)
+        self.assertIn("11.00 <small>ms</small>", html)
+        self.assertIn("Client present &rarr; photon, to white / black", html)
 
     def test_unknown_values_are_left_out(self):
         self.assertIsNone(traces.number({"x": "-1"}, "x"))

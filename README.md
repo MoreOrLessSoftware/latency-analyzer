@@ -41,7 +41,7 @@ the key press to the trigger being presented.
 | `analyzer/time_server.py` | Stand-alone version of the app's clock sync server, for testing Latency Cam without the app |
 | `android/` | Latency Cam, an Android app that records 240 fps video with every frame timed on the host's clock (see [android/README.md](android/README.md)) |
 
-## Latency Cam: present to photon and pacing
+## Latency Cam: host present to photon and pacing
 
 1. **Host:** stream `latency-test.exe`. The trigger flips on its own (A toggles it), and the app answers Latency Cam on
    port 48100: clock sync over UDP and uploads over TCP. Allow it through the firewall for both (see
@@ -57,11 +57,27 @@ the key press to the trigger being presented.
    `latency-test.exe`, or is `Documents\Latency Cam` when that can't be written (under Program Files, for example).
    `--results` changes it.
 
-To analyse a recording by hand, put `NAME.mp4` and `NAME.camera.json` in one folder and pass the host log from the
-run (by default `%TEMP%\sunshine_latency_test.csv`, with its `.frames.csv` next to it):
+To analyse an uploaded recording again, for example after adding Sunshine's and Moonlight's logs to its folder, give
+the analyzer just its results folder:
 
 ```
-python analyzer/analyze_video.py NAME.mp4 --stream 3840x2160 --stream-fps 117 --host-log sunshine_latency_test.csv --report
+latency-analyzer.exe results\NAME
+```
+
+Or run `latency-analyzer.exe` with no arguments, or double-click it: it lists the results folders it finds (next to
+itself, in the current folder and in `Documents\Latency Cam`), newest first, with each one's result and which logs it
+holds, and asks which to analyse again.
+
+It finds `NAME.mp4`, its timing file, the host log copy and any logs in the folder, takes the stream's size from the
+test app's log and its frame rate from what the test app presented while filming, and writes the report back into
+the folder. `--stream`, `--stream-fps` and the other options still override.
+
+A recording made elsewhere works the same way: put `NAME.mp4` and `NAME.camera.json` in one folder and pass the host
+log from the run (by default the `NAME.host.csv` next to the video, else `%TEMP%\sunshine_latency_test.csv`, with its
+`.frames.csv` next to it):
+
+```
+python analyzer/analyze_video.py NAME.mp4 --host-log sunshine_latency_test.csv --report
 ```
 
 The analyzer switches to this mode when `NAME.camera.json` sits next to the video.
@@ -82,9 +98,9 @@ Names may only use letters, digits, `.`, `_` and `-`. The server only runs while
 
 It reports:
 
-- **Present to photon, flips:** from the host's present call to the trigger crossing halfway on the client display,
-  for every flip.
-- **Present to photon, every frame:** the same for every host frame, timed by the frame number patch above the
+- **Host present → photon, flips:** from the game (the test app) handing the flip to Windows on the host, to the
+  trigger crossing halfway on the client display, for every flip.
+- **Host present → photon, every frame:** the same for every host frame, timed by the frame number patch above the
   trigger that changes with it. Only one patch changes per frame, because the number is Gray coded.
 - **Pacing:** for each pair of consecutive frames, the client's display interval minus the host's present interval.
   With VRR pacing working, these pile up at 0; at a fixed refresh rate they spread by the refresh interval.
@@ -93,8 +109,20 @@ It reports:
 
 Writes `NAME.flips.csv`, `NAME.frames.csv`, `NAME.regions.png` and, with `--report`, `NAME.report.html`.
 
-Present to photon includes everything after the present call: the capture wait, encoding, the network, decoding, the
-client's pacing and the display's own delay.
+"Present" alone is ambiguous here, so the analysis never uses it:
+
+- **host present**: the game (the test app) handing its frame to Windows on the host.
+- **client present**: Moonlight handing the decoded frame to Windows on the client. Moonlight's statistic **capture
+  to present** runs from capture to this point, before the client display has shown anything.
+
+```
+host present ─▶ capture ─────────────▶ client present ─────────▶ photon
+     │◀────▶│◀─ Moonlight: capture to present ─▶│◀──────────▶│
+     │◀──────────── camera: host present → photon ───────────▶│
+```
+
+Host present → photon includes everything: the capture wait, encoding, the network, decoding, the client's pacing and
+the client display's own delay.
 
 ### Breaking it down with Sunshine's and Moonlight's logs
 
@@ -104,14 +132,21 @@ through them. The report and summary get a **Pipeline** section with each stage'
 
 | Stage | From |
 |---|---|
-| app present call → Sunshine capture | the test app and Sunshine, both on the host's QueryPerformanceCounter |
+| host present → capture | the test app and Sunshine, both on the host's QueryPerformanceCounter |
 | capture → encoded, capture → sent | Sunshine |
-| first packet → last packet → decoder hands it over → GPU decode finished → present | Moonlight, on the client's clock |
-| app present → photon, capture → photon | the camera (and Sunshine) |
+| capture → first packet | Moonlight's capture to present less first packet → client present: the host sending the first of the frame, and the network |
+| first packet → last packet → decoder hands it over → GPU decode finished → client present | Moonlight, on the client's clock |
+| capture → client present (Moonlight's capture to present) | Moonlight, through its clock sync: the same figure as its statistics |
+| client present → photon | the camera's capture → photon less Moonlight's capture to present: the client display's own part |
+| capture → photon, host present → photon | the camera (and Sunshine) |
+
+Moonlight's capture to present, and so the rows built on it, need a Moonlight build whose pacing trace has the
+`capture_to_present_us` column. With it, the headline also shows **capture → client present** and **client present
+→ photon** next to **capture → photon**, and the three add up frame by frame.
 
 The client's clock is offset from the host's by an unknown amount, so no single stage spans both. Instead the spreads
-are compared frame by frame: Moonlight's present minus Sunshine's capture shows how steady the whole path was, and the
-camera's photon minus Moonlight's present how closely the camera and Moonlight agree on each frame.
+are compared frame by frame: client present minus capture shows how steady the whole path was, and photon minus client
+present how closely the camera and Moonlight agree on each frame.
 
 Either log works alone. With only Sunshine's, the client stages are missing. With only Moonlight's, its rows are
 matched to the test app's frames by lining up the frame-to-frame jitter of their timestamps; the host stages are

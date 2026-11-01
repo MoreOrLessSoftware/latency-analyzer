@@ -65,6 +65,23 @@ class PhotonClock:
         return float(self.fit.host_seconds(phone_ns)) - self.zero
 
 
+def presented_fps(host, timing, fit):
+    """
+    The rate the test app presented at while the recording ran, rounded to 0.1 fps, or None when it can't be told.
+    """
+    if len(host.frames) < 3:
+        return None
+    zero = host.start_qpc / host.frequency
+    start = float(fit.host_seconds(timing.starts_ns[0])) - zero
+    end = float(fit.host_seconds(timing.starts_ns[-1])) - zero
+    present = host.frames[:, 2]
+    during = present[(present >= start) & (present <= end)]
+    if during.size < 3:
+        during = present
+    interval = float(np.median(np.diff(during)))
+    return round(1 / interval, 1) if interval > 0 else None
+
+
 def run(args, timing_path):
     timing = load_camera_timing(timing_path)
     # The copy kept with an uploaded recording is from the filmed run; the test app's current log may not be
@@ -78,6 +95,15 @@ def run(args, timing_path):
         sys.exit("The phone synced with a host whose clock runs at another rate than the host log's. Is it the same host?")
     fit = fit_clock(sync["samples"], sync["qpc_frequency"])
 
+    # The stream's size and rate default to the test app's own: its log records its size, and the rate it presented at
+    # while filming covers changes made with F
+    if args.stream is None:
+        try:
+            args.stream = (int(host.header["width"]), int(host.header["height"]))
+        except (KeyError, ValueError):
+            sys.exit(f"{Path(host_log_path).name} doesn't record the test app's size; pass --stream")
+    if args.stream_fps is None:
+        args.stream_fps = presented_fps(host, timing, fit)
     width, height = args.stream
     layout = compute_layout(width, height)
     canvas = Canvas(width, height, layout)

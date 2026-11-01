@@ -9,6 +9,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from traces import CAPTURE_TO_CLIENT_PRESENT
+
 
 def group_latencies(latencies, stream_fps=None):
     """
@@ -422,7 +424,7 @@ def time_scatter(points, max_points=4000):
     x_of = lambda t: left + (t - x0) / span * (width - left - right)
     y_of = lambda v: top + (1 - min(v, top_value) / top_value) * (height - top - bottom)
 
-    parts = [f'<svg class="chart" viewBox="0 0 {width} {height}" role="img" aria-label="Present to photon of every frame over time">']
+    parts = [f'<svg class="chart" viewBox="0 0 {width} {height}" role="img" aria-label="Host present to photon of every frame over time">']
     k = 0
     while k * step <= top_value + 1e-6:
         y = y_of(k * step)
@@ -501,11 +503,30 @@ def write_camera_report(path, info, flips, frames, pacing, notes, files):
     out.append(f'<p class="sub">Stream {stream_text} &middot; Latency Cam, {esc(info["device"])}, {info["fps"]:g} fps, '
                f'{info["frames"] / info["fps"]:.1f} s</p>')
 
+    # "Host present" is the game (the test app) handing its frame to Windows on the host, "client present" Moonlight
+    # handing the decoded frame to Windows on the client, so the names line up with Moonlight's "capture to present"
+    pipeline = info.get("pipeline")
+    medians = {s.label: float(np.median(s.values)) for s in pipeline.stages} if pipeline else {}
+
+    def by_edge(label):
+        """'white / black' medians of a stage measured for each edge, or None."""
+        white, black = medians.get(f"{label}, to white"), medians.get(f"{label}, to black")
+        if white is None or black is None:
+            return None
+        return f'{white:.2f} <small>/ {black:.2f} ms</small>'
+
     tiles = []
     if flip_latencies:
-        tiles.append(("Present to photon, flips, median", f'{np.median(flip_latencies):.2f} <small>ms</small>'))
+        tiles.append(("Host present &rarr; photon, flips, median", f'{np.median(flip_latencies):.2f} <small>ms</small>'))
     if frame_latencies:
-        tiles.append(("Present to photon, every frame, median", f'{np.median(frame_latencies):.2f} <small>ms</small>'))
+        tiles.append(("Host present &rarr; photon, every frame, median", f'{np.median(frame_latencies):.2f} <small>ms</small>'))
+    if by_edge("capture -> photon"):
+        tiles.append(("Capture &rarr; photon, to white / black", by_edge("capture -> photon")))
+    if CAPTURE_TO_CLIENT_PRESENT in medians:
+        tiles.append(("Capture &rarr; client present (Moonlight&#39;s capture to present)",
+                      f'{medians[CAPTURE_TO_CLIENT_PRESENT]:.2f} <small>ms</small>'))
+    if by_edge("client present -> photon"):
+        tiles.append(("Client present &rarr; photon, to white / black", by_edge("client present -> photon")))
     if pacing.mismatch_ms.size:
         tiles.append(("Pacing, client &minus; host interval, sd", f'{pacing.mismatch_ms.std():.2f} <small>ms</small>'))
         tiles.append(("Uneven frame intervals", f'{pacing.uneven / pacing.mismatch_ms.size:.1%} <small>of {pacing.mismatch_ms.size}</small>'))
@@ -519,7 +540,7 @@ def write_camera_report(path, info, flips, frames, pacing, notes, files):
 
     if flips:
         presses = [{"input": i + 1, "latency": f["latency"], "rising": f["rising"]} for i, f in enumerate(flips)]
-        out.append("<h2>Present to photon, every trigger flip, ms</h2>")
+        out.append("<h2>Host present &rarr; photon, every trigger flip, ms</h2>")
         out.append(f'<div class="card">{dot_plot(presses, stream_fps)}'
                    '<p class="legend">From the host presenting the flip to the trigger crossing halfway on the client display. '
                    '<svg width="12" height="12"><circle cx="6" cy="6" r="5" fill="var(--series)"/></svg> turned white &nbsp; '
@@ -528,7 +549,7 @@ def write_camera_report(path, info, flips, frames, pacing, notes, files):
 
     if frames:
         zero = frames[0]["photon_s"]
-        out.append("<h2>Present to photon, every frame, ms</h2>")
+        out.append("<h2>Host present &rarr; photon, every frame, ms</h2>")
         out.append(f'<div class="card">{time_scatter([(f["photon_s"] - zero, f["latency"], f.get("rising", True)) for f in frames])}'
                    '<p class="legend">Each dot is one host frame, timed by the frame number patch that changed with it. '
                    '<svg width="12" height="12"><circle cx="6" cy="6" r="5" fill="var(--series)"/></svg> patch turned white &nbsp; '
@@ -547,12 +568,12 @@ def write_camera_report(path, info, flips, frames, pacing, notes, files):
 
     out.append("<h2>Statistics</h2>")
     out.append('<div class="card"><table><thead><tr><th>ms</th><th>n</th><th>median</th><th>mean</th><th>sd</th><th>p10</th><th>p90</th><th>min</th><th>max</th></tr></thead><tbody>')
-    out.append(stats_row("present to photon, flips", flip_latencies))
-    out.append(stats_row("present to photon, flips turning white", [f["latency"] for f in flips if f["rising"]]))
-    out.append(stats_row("present to photon, flips turning black", [f["latency"] for f in flips if not f["rising"]]))
-    out.append(stats_row("present to photon, every frame", frame_latencies))
-    out.append(stats_row("present to photon, frames turning white", [f["latency"] for f in frames if f.get("rising", True)]))
-    out.append(stats_row("present to photon, frames turning black", [f["latency"] for f in frames if not f.get("rising", True)]))
+    out.append(stats_row("host present → photon, flips", flip_latencies))
+    out.append(stats_row("host present → photon, flips turning white", [f["latency"] for f in flips if f["rising"]]))
+    out.append(stats_row("host present → photon, flips turning black", [f["latency"] for f in flips if not f["rising"]]))
+    out.append(stats_row("host present → photon, every frame", frame_latencies))
+    out.append(stats_row("host present → photon, frames turning white", [f["latency"] for f in frames if f.get("rising", True)]))
+    out.append(stats_row("host present → photon, frames turning black", [f["latency"] for f in frames if not f.get("rising", True)]))
     out.append(stats_row("host present interval", pacing.host_intervals_ms))
     out.append(stats_row("client display interval (corrected)", pacing.client_intervals_ms))
     out.append(stats_row("client minus host interval", pacing.mismatch_ms))
@@ -584,12 +605,13 @@ def write_camera_report(path, info, flips, frames, pacing, notes, files):
         checks = pipeline.checks
         lines = []
         if "moonlight_capture_to_present_sd_ms" in checks:
-            lines.append(f"Moonlight&#39;s present minus Sunshine&#39;s capture varied by {checks['moonlight_capture_to_present_sd_ms']:.2f} ms "
-                         "(sd): how steady the whole capture to present path was.")
+            lines.append(f"Client present minus capture varied by {checks['moonlight_capture_to_present_sd_ms']:.2f} ms "
+                         "(sd, so the clocks' offset doesn't matter): how steady the whole path from capture to the "
+                         "client present was.")
         for direction in ("white", "black"):
             key = f"photon_minus_present_sd_to_{direction}_ms"
             if key in checks:
-                lines.append(f"The camera&#39;s photon minus Moonlight&#39;s present varied by {checks[key]:.2f} ms for frames "
+                lines.append(f"Photon (camera) minus client present (Moonlight) varied by {checks[key]:.2f} ms for frames "
                              f"turning {direction}: how closely the camera and Moonlight agree on each frame&#39;s timing.")
         if lines:
             out.append('<p class="legend">' + "<br>".join(lines) + "</p>")
@@ -605,9 +627,11 @@ def write_camera_report(path, info, flips, frames, pacing, notes, files):
                    f'{pacing.mismatch_ms.size} consecutive pairs'),
     ]
     out.append('<div class="card"><dl>' + "".join(f"<dt>{k}</dt><dd>{v}</dd>" for k, v in rows) + "</dl></div>")
-    out.append('<p class="legend">Present to photon runs from the host&#39;s present call to the client display showing the '
-               'change, so it includes the capture wait, encoding, the network, decoding, the client&#39;s pacing and the '
-               'display&#39;s own delay.</p>')
+    out.append('<p class="legend">Host present &rarr; photon runs from the game (the test app) handing its frame to Windows on '
+               'the host to the client display showing the change: the capture wait, encoding, the network, decoding, the '
+               'client&#39;s pacing and the client display&#39;s own delay. Moonlight&#39;s &ldquo;capture to present&rdquo; '
+               'is the middle of that, from capture to Moonlight handing the frame to Windows on the client (the client '
+               'present).</p>')
 
     regions = embed_image(files["regions"], max_width=1600, jpeg=True)
     if regions:

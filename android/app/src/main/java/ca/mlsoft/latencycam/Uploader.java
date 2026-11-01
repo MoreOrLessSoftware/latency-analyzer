@@ -7,6 +7,7 @@ import android.os.ParcelFileDescriptor;
 import android.os.SystemClock;
 import android.provider.MediaStore;
 
+import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
@@ -242,7 +243,9 @@ final class Uploader {
         if (summary == null) {
             return "Done, but the host sent no summary.";
         }
-        StringBuilder text = new StringBuilder("Present to photon, median:");
+        // "Host present" is the game handing its frame to Windows on the host; "client present" is Moonlight doing so
+        // on the client, where Moonlight's own "capture to present" ends
+        StringBuilder text = new StringBuilder("Host present → photon, median:");
         JSONObject flips = summary.optJSONObject("flips");
         JSONObject frames = summary.optJSONObject("frames");
         text.append(flips != null ? String.format(Locale.US, "\n  flips %.2f ms (%d)", flips.optDouble("median"), flips.optInt("n")) : "\n  flips: none matched");
@@ -251,6 +254,24 @@ final class Uploader {
         JSONObject toBlack = summary.optJSONObject("frames_to_black");
         if (toWhite != null && toBlack != null) {
             text.append(String.format(Locale.US, "\n    to white %.2f, to black %.2f ms", toWhite.optDouble("median"), toBlack.optDouble("median")));
+        }
+        // With Sunshine's and Moonlight's logs, the parts in the same words as Moonlight's statistics
+        JSONObject pipeline = summary.optJSONObject("pipeline");
+        JSONArray stages = pipeline == null ? null : pipeline.optJSONArray("stages");
+        if (stages != null) {
+            String[][] shown = {
+                {"capture -> photon, to white", "Capture → photon, to white"},
+                {"capture -> client present (Moonlight's capture to present)", "Capture → client present (Moonlight)"},
+                {"client present -> photon, to white", "Client present → photon, to white"},
+            };
+            for (String[] entry : shown) {
+                for (int i = 0; i < stages.length(); i++) {
+                    JSONObject stage = stages.optJSONObject(i);
+                    if (stage != null && entry[0].equals(stage.optString("label"))) {
+                        text.append(String.format(Locale.US, "\n%s: %.2f ms", entry[1], stage.optDouble("median")));
+                    }
+                }
+            }
         }
         JSONObject pacing = summary.optJSONObject("pacing");
         if (pacing != null && pacing.optJSONObject("mismatch") != null) {

@@ -17,13 +17,22 @@ from pathlib import Path
 
 import numpy as np
 
+# The names of the end to end stages. "host present" is the game (the test app) handing its frame to Windows on the
+# host, "client present" Moonlight handing the decoded frame to Windows on the client: Moonlight's "capture to
+# present" ends at the client present, while the camera's figures run to the light on the client's screen.
+HOST_PRESENT_TO_CAPTURE = "host present -> capture"
+CAPTURE_TO_CLIENT_PRESENT = "capture -> client present (Moonlight's capture to present)"
+CLIENT_PRESENT_TO_PHOTON = "client present -> photon"
+CAPTURE_TO_PHOTON = "capture -> photon"
+HOST_PRESENT_TO_PHOTON = "host present -> photon"
+
 # Moonlight stages: label, start column, end column. Missing columns (older builds) leave the stage out.
 CLIENT_STAGES = [
     ("first packet -> last packet", "first_packet_us", "last_packet_us"),
     ("last packet -> decoder hands it over", "last_packet_us", "decoded_us"),
     ("handed over -> GPU decode finished", "decoded_us", "arrival_us"),
-    ("ready -> present (pacer hold)", "arrival_us", "present_us"),
-    ("first packet -> present", "first_packet_us", "present_us"),
+    ("ready -> client present (pacer hold)", "arrival_us", "present_us"),
+    ("first packet -> client present", "first_packet_us", "present_us"),
 ]
 # Sunshine stages, in microseconds after capture
 HOST_STAGES = [
@@ -201,22 +210,42 @@ def analyse(joined, camera_frames, sunshine_file, moonlight_file):
     with_capture = [j for j in joined if j["capture"] is not None]
     with_moonlight = [j for j in joined if j["moonlight"] is not None]
 
+    def capture_to_present(j):
+        """Moonlight's capture to present for a frame, in ms, from its clock sync; None where it has none."""
+        value = number(j["moonlight"], "capture_to_present_us") if j["moonlight"] is not None else None
+        return None if value is None or value <= 0 else value / 1000
+
+    def first_packet_to_present(j):
+        a, b = number(j["moonlight"], "first_packet_us"), number(j["moonlight"], "present_us")
+        return None if not a or not b else (b - a) / 1000
+
     if with_capture:
-        stage("app present call -> Sunshine capture", "test app + Sunshine",
+        stage(HOST_PRESENT_TO_CAPTURE, "test app + Sunshine",
               [(j["capture_us"] - j["app_present_us"]) / 1000 for j in with_capture])
         for label, column in HOST_STAGES:
             stage(label, "Sunshine", [None if number(j["capture"], column) is None else number(j["capture"], column) / 1000 for j in with_capture])
+    # Where the frame left the host and crossed the network: Moonlight's capture to present less its own part
+    stage("capture -> first packet", "Moonlight",
+          [None if capture_to_present(j) is None or first_packet_to_present(j) is None
+           else capture_to_present(j) - first_packet_to_present(j) for j in with_moonlight])
     for label, start, end in CLIENT_STAGES:
         values = []
         for j in with_moonlight:
             a, b = number(j["moonlight"], start), number(j["moonlight"], end)
             values.append(None if a is None or b is None or a == 0 or b == 0 else (b - a) / 1000)
         stage(label, "Moonlight", values)
+    stage(CAPTURE_TO_CLIENT_PRESENT, "Moonlight", [capture_to_present(j) for j in with_moonlight])
     for direction, rising in (("to white", True), ("to black", False)):
-        stage(f"app present -> photon, {direction}", "camera",
-              [j["camera"]["latency"] for j in joined if j["camera"]["rising"] == rising])
-        stage(f"capture -> photon, {direction}", "camera + Sunshine",
+        # The client display's own part: the camera's capture to photon less Moonlight's capture to present
+        stage(f"{CLIENT_PRESENT_TO_PHOTON}, {direction}", "camera + Sunshine + Moonlight",
+              [None if capture_to_present(j) is None else (j["photon_us"] - j["capture_us"]) / 1000 - capture_to_present(j)
+               for j in with_capture if j["moonlight"] is not None and j["camera"]["rising"] == rising])
+    for direction, rising in (("to white", True), ("to black", False)):
+        stage(f"{CAPTURE_TO_PHOTON}, {direction}", "camera + Sunshine",
               [(j["photon_us"] - j["capture_us"]) / 1000 for j in with_capture if j["camera"]["rising"] == rising])
+    for direction, rising in (("to white", True), ("to black", False)):
+        stage(f"{HOST_PRESENT_TO_PHOTON}, {direction}", "camera",
+              [j["camera"]["latency"] for j in joined if j["camera"]["rising"] == rising])
 
     if with_capture:
         app_to_capture = np.array([(j["capture_us"] - j["app_present_us"]) / 1000 for j in with_capture])
@@ -292,18 +321,20 @@ def sources(pipeline):
 def describe(pipeline):
     """Plain text lines for the console."""
     lines = [f"Pipeline:    {pipeline.joined} of {pipeline.camera_frames} frames followed through {sources(pipeline)}"]
+    label_width = max((len(s.label) for s in pipeline.stages), default=0)
+    source_width = max((len(s.source) for s in pipeline.stages), default=0)
     for s in pipeline.stages:
         st = s.stats()
-        lines.append(f"  {st['label']:42s} {st['source']:20s} median {st['median']:6.2f}  sd {st['sd']:5.2f} ms")
+        lines.append(f"  {st['label']:{label_width}s} {st['source']:{source_width}s} median {st['median']:6.2f}  sd {st['sd']:5.2f} ms")
     checks = pipeline.checks
     if any(key.endswith("sd_ms") or key.startswith("photon_minus") for key in checks):
         lines.append("  frame by frame (spread, so the client's clock offset doesn't matter):")
         if "moonlight_capture_to_present_sd_ms" in checks:
-            lines.append(f"    Moonlight present - Sunshine capture: sd {checks['moonlight_capture_to_present_sd_ms']:.2f} ms")
+            lines.append(f"    client present - capture: sd {checks['moonlight_capture_to_present_sd_ms']:.2f} ms")
         for direction in ("white", "black"):
             key = f"photon_minus_present_sd_to_{direction}_ms"
             if key in checks:
-                lines.append(f"    camera photon - Moonlight present, to {direction}: sd {checks[key]:.2f} ms")
+                lines.append(f"    photon - client present, to {direction}: sd {checks[key]:.2f} ms")
     if "moonlight_alignment_error_ms" in checks:
         lines.append(f"  Moonlight's trace lined up with the test app's frames by timing, typical error {checks['moonlight_alignment_error_ms']:.2f} ms")
     return lines
