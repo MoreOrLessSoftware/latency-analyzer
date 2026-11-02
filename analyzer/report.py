@@ -260,7 +260,7 @@ def write_camera_report(path, info, flips, frames, pacing, notes, files):
     """
     Write the report for a Latency Cam video.
 
-    info: video, frames, fps, stream, stream_fps, found, estimated, fit (ClockFit), flips_seen, flips_logged, device.
+    info: video, frames, fps, stream, stream_fps, found, fit (ClockFit), flips_seen, flips_logged, device.
     flips: dicts with seq, source, latency, rising, edge_ms. frames: dicts with frame, photon_s, latency.
     pacing: camera_timing.Pacing. notes: plain text. files: dict with the flips, frames and regions paths.
     """
@@ -391,7 +391,7 @@ def write_camera_report(path, info, flips, frames, pacing, notes, files):
     out.append("<h2>Measurement</h2>")
     rows = [
         ("Video", f'{info["frames"]} frames at {info["fps"]:g} fps, each timed by its sensor timestamp and rolling shutter'),
-        ("Bullseyes", f'found in {info["found"]}/{info["frames"]} frames' + (f', {info["estimated"]} with one hidden and estimated' if info["estimated"] else "")),
+        ("Bullseyes", f'found in {info["found"]}/{info["frames"]} frames'),
         ("Clock sync", f'{fit.windows} of {fit.samples} exchanges used; fastest round trip {fit.min_rtt_ms:.2f} ms '
                        f'(median {fit.median_rtt_ms:.2f}); scatter {fit.residual_ms:.3f} ms; phone clock {fit.drift_ppm:+.1f} ppm against the host&#39;s'),
         ("Flips", f'{info["flips_seen"]} seen, {len(flips)} matched to the host log ({info["flips_logged"]} logged)'),

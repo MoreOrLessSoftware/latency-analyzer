@@ -29,19 +29,26 @@ class FiducialTest(unittest.TestCase):
         corners = [(100, 60), (860, 60), (100, 480), (860, 480)]
         for (x, y), white in zip(corners, (205, 200, 200, 162)):
             bullseye(image, x, y, white)
-        found = find_fiducials(image)
-        self.assertIsNotNone(found)
-        points, estimated = found
-        self.assertIsNone(estimated)
+        points = find_fiducials(image)
+        self.assertIsNotNone(points)
         np.testing.assert_allclose(points, np.array(corners, np.float32), atol=1)
 
-    def test_estimates_a_hidden_corner(self):
+    def test_needs_all_four(self):
         image = np.full((540, 960), 150, np.uint8)
         for x, y in ((860, 60), (100, 480), (860, 480)):
             bullseye(image, x, y, 220)
-        points, estimated = find_fiducials(image)
-        self.assertEqual(estimated, 0)
-        np.testing.assert_allclose(points[0], (100, 60), atol=1)
+        self.assertIsNone(find_fiducials(image))
+
+    def test_ignores_a_stray_shape_in_the_pattern(self):
+        # A bullseye-like shape away from the corners doesn't make a display outline, so the four corners win
+        image = np.full((540, 960), 150, np.uint8)
+        corners = [(100, 60), (860, 60), (100, 480), (860, 480)]
+        for x, y in corners + [(480, 380)]:
+            bullseye(image, x, y, 220)
+        np.testing.assert_allclose(find_fiducials(image), np.array(corners, np.float32), atol=1)
+        # With a corner hidden, the stray shape and the other three don't pass for one
+        image[30:91, 70:131] = 150
+        self.assertIsNone(find_fiducials(image))
 
 
 class ReportTest(unittest.TestCase):

@@ -167,7 +167,7 @@ class TracesTest(unittest.TestCase):
         pipeline = traces.analyse(traces.join(frames, START_US, sunshine, moonlight), len(frames), "s.csv", "m.csv") if with_traces else None
         fit = types.SimpleNamespace(windows=10, samples=100, min_rtt_ms=2.0, median_rtt_ms=4.0, residual_ms=0.1, drift_ppm=20.0)
         info = {"video": "run.mp4", "frames": 100, "fps": 240.0, "stream": (2560, 1440), "stream_fps": 97.0, "found": 100,
-                "estimated": 0, "fit": fit, "flips_seen": 0, "flips_logged": 0, "device": "Test", "edge_difference": 0.0,
+                "fit": fit, "flips_seen": 0, "flips_logged": 0, "device": "Test", "edge_difference": 0.0,
                 "pipeline": pipeline}
         if with_traces:
             # Held by a limiter at 97 fps on a 100 Hz display

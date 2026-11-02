@@ -8,9 +8,9 @@ camera frame and times each trigger flip and each new frame number reaching the 
 host present to the photon, and how evenly the client showed the host's frames (see camera_mode.py).
 
 How it finds the pattern:
- - The four corner bullseyes are found in every frame, so the camera may be handheld. When one is hidden (Moonlight's
-   stats overlay covers the top left one), it is estimated from the other three. They give a perspective
-   transform from the stream's pixel grid to the camera image, and each frame is resampled onto that grid.
+ - The four corner bullseyes are found in every frame, so the camera may be handheld. All four must be in view. They
+   give a perspective transform from the stream's pixel grid to the camera image, and each frame is resampled onto
+   that grid.
  - The trigger and frame number patches are placed by the same layout code as the app (pattern.h).
  - Each change is timed where the brightness crosses halfway between the levels before and after it, interpolated
    between camera frames.
@@ -28,6 +28,7 @@ import argparse
 import json
 import sys
 from dataclasses import dataclass
+from itertools import combinations
 from pathlib import Path
 
 import cv2
@@ -183,10 +184,60 @@ def bullseye_centers(gray, threshold):
     return centers
 
 
+# A quadrilateral's corners are taken for the display's when the parallelogram they would make is out by at most this
+# fraction of their diagonals: more than a camera's perspective or a curved display bends it, less than a stray
+# bullseye-like shape in the pattern
+MAX_SKEW = 0.2
+
+
+def corner_roles(points):
+    """Order four points as top left, top right, bottom left, bottom right, or None when that's ambiguous."""
+    sums = points[:, 0] + points[:, 1]
+    diffs = points[:, 0] - points[:, 1]
+    roles = [int(np.argmin(sums)), int(np.argmax(diffs)), int(np.argmin(diffs)), int(np.argmax(sums))]
+    return roles if len(set(roles)) == 4 else None
+
+
+def quad_area(corners):
+    """Area of the quadrilateral top left, top right, bottom right, bottom left."""
+    x, y = corners[[0, 1, 3, 2], 0], corners[[0, 1, 3, 2], 1]
+    return 0.5 * abs(float(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1))))
+
+
+def plausible_four(points):
+    """
+    The display's corners among four points, ordered as top left, top right, bottom left, bottom right, or None when
+    they can't be: a stray point makes the shape far from a parallelogram.
+    """
+    roles = corner_roles(points)
+    if roles is None:
+        return None
+    corners = points[roles]
+    tl, tr, bl, br = corners
+    diagonal = (np.linalg.norm(br - tl) + np.linalg.norm(tr - bl)) / 2
+    if diagonal <= 0 or np.linalg.norm(tl + br - tr - bl) > MAX_SKEW * diagonal:
+        return None
+    return corners
+
+
+def choose_corners(candidates):
+    """
+    The display's corners among candidate bullseyes, ordered as top left, top right, bottom left, bottom right: the
+    largest plausible four, or None when no four are.
+    """
+    points = np.array(candidates, dtype=np.float32)
+    best = None
+    for combo in combinations(range(len(points)), 4):
+        corners = plausible_four(points[list(combo)])
+        if corners is not None and (best is None or quad_area(corners) > quad_area(best)):
+            best = corners
+    return best
+
+
 def find_fiducials(gray):
     """
-    Find the four corner bullseyes. Returns their centers as top left, top right, bottom left, bottom right, and the
-    index of a corner that was hidden and estimated from the other three (or None), or None when too few are found.
+    Find the four corner bullseyes. Returns their centers as top left, top right, bottom left, bottom right, or None
+    unless all four are found.
     """
     background = float(np.median(gray))
     bright = float(np.percentile(gray, 99.8))
@@ -198,7 +249,8 @@ def find_fiducials(gray):
     # median is the dark room around it and the display's own gray clears halfway, merging the white squares into it,
     # so higher levels are tried as well. The brightest part of the frame is often the trigger, well above the
     # bullseyes, and each corner may need its own level, so what each level finds is pooled. A bullseye found again
-    # nearby at another level is the same one; the first level's position is kept.
+    # nearby at another level is the same one; the first level's position is kept. Low levels can turn up stray
+    # shapes too, so only corners that make a plausible display outline are used.
     candidates = []
     same = gray.shape[1] * 0.03
     for level in (0.5, 0.3, 0.7, 0.85, 0.15, 0.08):
@@ -206,52 +258,16 @@ def find_fiducials(gray):
             if all(np.hypot(point[0] - c[0], point[1] - c[1]) > same for c in candidates):
                 candidates.append(point)
         if len(candidates) >= 4:
-            break
-
-    if len(candidates) < 3:
-        return None
-    points = np.array(candidates)
-    if len(points) == 3:
-        # One bullseye is hidden, often under Moonlight's stats overlay. The two farthest apart are a diagonal, so
-        # the hidden corner completes the parallelogram with the third. complete_corners() corrects it for perspective.
-        pairs = [(0, 1, 2), (0, 2, 1), (1, 2, 0)]
-        a, b, c = max(pairs, key=lambda p: np.linalg.norm(points[p[0]] - points[p[1]]))
-        points = np.vstack([points, points[a] + points[b] - points[c]])
-    sums = points[:, 0] + points[:, 1]
-    diffs = points[:, 0] - points[:, 1]
-    roles = [np.argmin(sums), np.argmax(diffs), np.argmin(diffs), np.argmax(sums)]
-    if len(set(roles)) < 4:
-        return None
-    corners = np.array([points[i] for i in roles], dtype=np.float32)
-    estimated = None
-    if len(candidates) == 3:
-        if 3 not in roles:
-            return None
-        estimated = roles.index(3)
-    return corners, estimated
-
-
-def complete_corners(corners, estimated, last_full):
-    """
-    Correct a corner estimated by parallelogram completion with the last frame where all four were seen: there the
-    true corner and its parallelogram estimate differ by the perspective of the view, which changes slowly.
-    """
-    if estimated is None or last_full is None:
-        return corners
-    others = [i for i in range(4) if i != estimated]
-    opposite = 3 - estimated  # TL<->BR and TR<->BL
-    neighbours = [i for i in others if i != opposite]
-    guess = last_full[neighbours[0]] + last_full[neighbours[1]] - last_full[opposite]
-    corners = corners.copy()
-    corners[estimated] += last_full[estimated] - guess
-    return corners
+            corners = choose_corners(candidates)
+            if corners is not None:
+                return corners
+    return None
 
 
 def read_video(path, canvas, layout, max_frames=None):
     """
     Resample every frame onto the canvas. Returns the stack of canvas frames, which frames are valid (false before the
-    fiducials were first found), the number of frames where the fiducials were found, how many of those had only three
-    of them in view, a reference frame with its transform for drawing, each frame's transform from canvas pixels to
+    fiducials were first found), the number of frames where the fiducials were found, a reference frame with its transform for drawing, each frame's transform from canvas pixels to
     full resolution camera pixels (None before the fiducials were first found), and the camera frame size.
     """
     capture = cv2.VideoCapture(str(path))
@@ -264,8 +280,6 @@ def read_video(path, canvas, layout, max_frames=None):
     transforms = []
     size = None
     found = 0
-    three = 0
-    last_full = None
     transform = None
     reference = None
     total = int(capture.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
@@ -278,15 +292,8 @@ def read_video(path, canvas, layout, max_frames=None):
         size = gray.shape[1], gray.shape[0]
         small = cv2.resize(gray, (gray.shape[1] // 2, gray.shape[0] // 2), interpolation=cv2.INTER_AREA)
 
-        detection = find_fiducials(small)
-        corners = None
-        if detection is not None:
-            corners, estimated = detection
-            if estimated is None:
-                last_full = corners
-            else:
-                three += 1
-                corners = complete_corners(corners, estimated, last_full)
+        corners = find_fiducials(small)
+        if corners is not None:
             found += 1
             # Canvas pixel -> half resolution camera pixel. A held transform covers frames where detection fails.
             transform = cv2.getPerspectiveTransform(canvas_fiducials, corners)
@@ -321,7 +328,7 @@ def read_video(path, canvas, layout, max_frames=None):
     capture.release()
     if not frames:
         sys.exit("The video has no frames")
-    return np.stack(frames), np.array(valid), found, three, reference, transforms, size
+    return np.stack(frames), np.array(valid), found, reference, transforms, size
 
 
 # ---------------------------------------------------------------------------------------------------------------------

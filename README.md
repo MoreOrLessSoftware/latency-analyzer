@@ -140,8 +140,8 @@ host's logs and everything the analysis wrote: `NAME.report.html`, `NAME.summary
 Tips:
 
 - Hold the phone steady or use a stand. Handheld works too, because every frame is re-aligned on the bullseyes.
-- A client's statistics overlay can stay on, such as Moonlight's (Ctrl+Alt+Shift+S). If it hides a bullseye, the
-  analyzer estimates that corner from the other three.
+- All four corner bullseyes must be visible. A client's statistics overlay, such as Moonlight's (Ctrl+Alt+Shift+S),
+  can stay on as long as it doesn't cover one.
 - Avoid glare on the display, and fill as much of the shot with it as you can: the frame number patches are small.
 - Keep `latency-test.exe` running until the upload and analysis are done. It starts its logs afresh each time it
   runs, so a recording uploaded after a restart has nothing to match; the analysis says so.

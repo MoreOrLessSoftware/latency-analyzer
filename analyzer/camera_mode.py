@@ -118,7 +118,7 @@ def run(args, timing_path):
     stem = out_dir / args.video.stem
 
     print(f"Reading {args.video.name}, timed by {Path(timing_path).name}", file=sys.stderr)
-    stack, valid, found, three, reference, transforms, size = read_video(args.video, canvas, layout, args.max_frames)
+    stack, valid, found, reference, transforms, size = read_video(args.video, canvas, layout, args.max_frames)
     frames = stack.shape[0]
     if found == 0:
         sys.exit("The corner bullseyes were not found in any frame. Is the whole pattern in shot?")
@@ -242,7 +242,7 @@ def run(args, timing_path):
     frame_fall = [r["latency"] for r in frame_rows if not r["rising"]]
     print()
     print(f"Video:       {frames} frames at {timing.fps:g} fps = {frames / timing.fps:.2f} s; stream {width}x{height}")
-    print(f"Bullseyes:   found in {found}/{frames} frames" + (f", {three} of them with one hidden and estimated" if three else ""))
+    print(f"Bullseyes:   found in {found}/{frames} frames")
     print(f"Clock sync:  {fit.windows} of {fit.samples} exchanges used; fastest round trip {fit.min_rtt_ms:.2f} ms "
           f"(median {fit.median_rtt_ms:.2f}); scatter {fit.residual_ms:.3f} ms; phone clock {fit.drift_ppm:+.1f} ppm against the host's")
     print(f"Flips:       {len(flips)} seen, {len(flip_rows)} matched to the host log ({len(host.flips)} logged)")
@@ -352,7 +352,6 @@ def run(args, timing_path):
             "stream": (width, height),
             "stream_fps": args.stream_fps,
             "found": found,
-            "estimated": three,
             "fit": fit,
             "flips_seen": len(flips),
             "flips_logged": len(host.flips),
