@@ -194,14 +194,17 @@ def find_fiducials(gray):
         return None
 
     # Halfway between the background and white usually works. With a short exposure or a dim corner of the display the
-    # white squares can fall below it, so a lower level is tried before settling for three. When the display fills
-    # little of the shot, the median is the dark room around it and the display's own gray clears halfway, merging the
-    # white squares into it, so higher levels are tried too.
+    # white squares can fall below it, so lower levels are tried too. When the display fills little of the shot, the
+    # median is the dark room around it and the display's own gray clears halfway, merging the white squares into it,
+    # so higher levels are tried as well. The brightest part of the frame is often the trigger, well above the
+    # bullseyes, and each corner may need its own level, so what each level finds is pooled. A bullseye found again
+    # nearby at another level is the same one; the first level's position is kept.
     candidates = []
-    for level in (0.5, 0.3, 0.7, 0.85):
-        found = bullseye_centers(gray, background + (bright - background) * level)
-        if len(found) > len(candidates):
-            candidates = found
+    same = gray.shape[1] * 0.03
+    for level in (0.5, 0.3, 0.7, 0.85, 0.15, 0.08):
+        for point in bullseye_centers(gray, background + (bright - background) * level):
+            if all(np.hypot(point[0] - c[0], point[1] - c[1]) > same for c in candidates):
+                candidates.append(point)
         if len(candidates) >= 4:
             break
 

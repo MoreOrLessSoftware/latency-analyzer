@@ -1,13 +1,47 @@
 """
-Tests for the report's chart helpers. Run with: python -m unittest discover -s tests
+Tests for finding the pattern and the report's chart helpers. Run with: python -m unittest discover -s tests
 """
 import sys
 import unittest
 from pathlib import Path
 
+import numpy as np
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "analyzer"))
 
+from analyze_video import find_fiducials  # noqa: E402
 from report import dot_plot, nice_step  # noqa: E402
+
+
+def bullseye(image, x, y, white):
+    """Draw a bullseye centred at x, y: a white square, a black ring and a white center."""
+    image[y - 30:y + 30, x - 30:x + 30] = white
+    image[y - 20:y + 20, x - 20:x + 20] = 0
+    image[y - 7:y + 7, x - 7:x + 7] = white
+
+
+class FiducialTest(unittest.TestCase):
+    def test_finds_dim_bullseyes_beside_a_bright_trigger(self):
+        # As filmed at 4K: the bullseyes' whites well below the trigger's, and one corner dimmer still, so no single
+        # threshold level finds all four
+        image = np.full((540, 960), 150, np.uint8)
+        image[200:340, 410:550] = 250
+        corners = [(100, 60), (860, 60), (100, 480), (860, 480)]
+        for (x, y), white in zip(corners, (205, 200, 200, 162)):
+            bullseye(image, x, y, white)
+        found = find_fiducials(image)
+        self.assertIsNotNone(found)
+        points, estimated = found
+        self.assertIsNone(estimated)
+        np.testing.assert_allclose(points, np.array(corners, np.float32), atol=1)
+
+    def test_estimates_a_hidden_corner(self):
+        image = np.full((540, 960), 150, np.uint8)
+        for x, y in ((860, 60), (100, 480), (860, 480)):
+            bullseye(image, x, y, 220)
+        points, estimated = find_fiducials(image)
+        self.assertEqual(estimated, 0)
+        np.testing.assert_allclose(points[0], (100, 60), atol=1)
 
 
 class ReportTest(unittest.TestCase):
