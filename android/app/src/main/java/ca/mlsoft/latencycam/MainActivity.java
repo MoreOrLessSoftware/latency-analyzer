@@ -29,6 +29,7 @@ import android.view.inputmethod.EditorInfo;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -62,8 +63,11 @@ public class MainActivity extends Activity implements Recorder.Listener {
     private SharedPreferences prefs;
     private boolean cameraOpen;
     private boolean resumed;
+    private boolean onRecordingTab;
 
     private TextureView preview;
+    private View cameraPlaceholder;
+    private TextView placeholderText;
     private TextView recordingTab;
     private TextView resultsTab;
     private View recordingPage;
@@ -143,6 +147,12 @@ public class MainActivity extends Activity implements Recorder.Listener {
         });
         root.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> fitPreview());
 
+        // Covers the preview while the camera is closed, rather than leaving its last frame up
+        cameraPlaceholder = buildCameraPlaceholder();
+        FrameLayout.LayoutParams placeholderParams = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+        placeholderParams.rightMargin = dp(PANE_DP);
+        root.addView(cameraPlaceholder, placeholderParams);
+
         // Right-hand pane: a tab bar over two pages
         LinearLayout pane = new LinearLayout(this);
         pane.setOrientation(LinearLayout.VERTICAL);
@@ -158,7 +168,12 @@ public class MainActivity extends Activity implements Recorder.Listener {
         tabs.addView(resultsTab, new LinearLayout.LayoutParams(0, dp(48), 1));
         pane.addView(tabs);
         recordingTab.setOnClickListener(v -> showTab(true));
-        resultsTab.setOnClickListener(v -> showTab(false));
+        resultsTab.setOnClickListener(v -> {
+            // Leaving the tab closes the camera, which would end the recording
+            if (!recorder.isRecording()) {
+                showTab(false);
+            }
+        });
 
         FrameLayout pages = new FrameLayout(this);
         pane.addView(pages, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
@@ -169,6 +184,30 @@ public class MainActivity extends Activity implements Recorder.Listener {
         showTab(true);
 
         setContentView(root);
+    }
+
+    private View buildCameraPlaceholder() {
+        LinearLayout placeholder = new LinearLayout(this);
+        placeholder.setOrientation(LinearLayout.VERTICAL);
+        placeholder.setGravity(Gravity.CENTER);
+        placeholder.setBackgroundColor(Color.BLACK);
+        ImageView icon = new ImageView(this);
+        icon.setImageResource(R.drawable.ic_camera_paused);
+        icon.setImageTintList(ColorStateList.valueOf(MUTED));
+        placeholder.addView(icon, new LinearLayout.LayoutParams(dp(72), dp(72)));
+        placeholderText = new TextView(this);
+        placeholderText.setTextColor(MUTED);
+        placeholderText.setTextSize(15);
+        placeholderText.setGravity(Gravity.CENTER);
+        placeholderText.setPadding(0, dp(8), 0, 0);
+        placeholder.addView(placeholderText);
+        return placeholder;
+    }
+
+    private void updateCameraPlaceholder() {
+        cameraPlaceholder.setVisibility(cameraOpen ? View.GONE : View.VISIBLE);
+        // On the Recording tab the status text below Record says why the camera is off
+        placeholderText.setText(onRecordingTab ? "Camera off" : "Camera paused");
     }
 
     private View buildRecordingPage() {
@@ -283,6 +322,14 @@ public class MainActivity extends Activity implements Recorder.Listener {
     }
 
     private void showTab(boolean recording) {
+        onRecordingTab = recording;
+        // The camera only runs while the Recording tab is showing
+        if (recording) {
+            openCameraIfReady();
+        } else {
+            closeCamera();
+        }
+        updateCameraPlaceholder();
         recordingPage.setVisibility(recording ? View.VISIBLE : View.GONE);
         resultsPage.setVisibility(recording ? View.GONE : View.VISIBLE);
         styleTab(recordingTab, recording);
@@ -492,13 +539,7 @@ public class MainActivity extends Activity implements Recorder.Listener {
     protected void onPause() {
         resumed = false;
         ui.removeCallbacks(statusTick);
-        if (cameraOpen) {
-            recorder.close();
-            cameraOpen = false;
-        }
-        recordButton.setEnabled(false);
-        recordButton.setText("Record");
-        setRecordColor(false);
+        closeCamera();
         clockSync.stop();
         if (wifiLock.isHeld()) {
             wifiLock.release();
@@ -521,8 +562,19 @@ public class MainActivity extends Activity implements Recorder.Listener {
         }
     }
 
+    private void closeCamera() {
+        if (cameraOpen) {
+            recorder.close();
+            cameraOpen = false;
+        }
+        updateCameraPlaceholder();
+        recordButton.setEnabled(false);
+        recordButton.setText("Record");
+        setRecordColor(false);
+    }
+
     private void openCameraIfReady() {
-        if (!resumed || cameraOpen || !preview.isAvailable() || checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+        if (!resumed || !onRecordingTab || cameraOpen || !preview.isAvailable() || checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             return;
         }
         // Wait for the preview's final size: resizing it after the session exists would change its buffers' size
@@ -531,6 +583,7 @@ public class MainActivity extends Activity implements Recorder.Listener {
             return;
         }
         cameraOpen = true;
+        updateCameraPlaceholder();
         recorder.open(preview.getSurfaceTexture());
     }
 
@@ -570,6 +623,9 @@ public class MainActivity extends Activity implements Recorder.Listener {
     @Override
     public void onReady(String description) {
         ui.post(() -> {
+            if (!cameraOpen) {
+                return;  // Closed since, e.g. by leaving the Recording tab
+            }
             cameraText.setText(description);
             recordButton.setEnabled(true);
             recordButton.setText("Record");
@@ -591,6 +647,7 @@ public class MainActivity extends Activity implements Recorder.Listener {
     public void onClosed(String reason) {
         ui.post(() -> {
             cameraOpen = false;
+            updateCameraPlaceholder();
             cameraText.setText(reason);
             recordButton.setEnabled(false);
             recordButton.setText("Record");
