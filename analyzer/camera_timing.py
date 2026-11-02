@@ -298,7 +298,7 @@ def present_wait(frames, header):
                        f"{held}, at {1000 / interval:.1f} fps" + (f", below the display's {refresh:g} Hz" if refresh else "")
                        + f": most likely {limiter}, which waits inside the app's Present. Host present times are "
                        "when the app called Present, so they leave the wait out when the limiter hands the frame on "
-                       "before waiting, as RTSS's default mode appears to.")
+                       "before waiting.")
 
 
 # ---------------------------------------------------------------------------------------------------------------------
