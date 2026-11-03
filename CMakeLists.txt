@@ -45,6 +45,7 @@ install(FILES
         analyzer/camera_mode.py
         analyzer/camera_timing.py
         analyzer/traces.py
+        analyzer/compare.py
         analyzer/time_server.py
         README.md
         DESTINATION .)

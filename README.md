@@ -21,6 +21,7 @@ Builds of the host and client that log every frame can optionally break the resu
 | `analyzer/analyze_video.py` | The analyzer's entry point: finds the pattern in the video; bundled as `latency-analyzer.exe` |
 | `analyzer/camera_mode.py`, `analyzer/camera_timing.py` | Times what the camera saw on the host's clock |
 | `analyzer/traces.py` | Joins the results with Sunshine's frame log and Moonlight's pacing trace |
+| `analyzer/compare.py` | Compares analysed runs side by side (`latency-analyzer compare`) |
 | `analyzer/report.py` | The HTML report |
 | `analyzer/build_exe.ps1`, `analyzer/requirements.txt` | Bundle the analyzer into `latency-analyzer.exe` with PyInstaller |
 | `analyzer/time_server.py` | Stand-alone version of the app's clock sync server, for testing Latency Cam without the app |
@@ -181,6 +182,39 @@ python analyzer/analyze_video.py NAME.mp4 --host-log latency_test.csv --report
 | `--report` | Also write the HTML report (always, for a results folder). |
 | `--out DIR` | Output folder. The default is the video's folder. |
 | `--max-frames N` | Analyse only the start of the video. |
+
+### Compare runs
+
+To set two or more analysed runs side by side, for example the test app on the client alone against the same client
+streaming it, or one stream against another after changing a setting:
+
+```
+latency-analyzer.exe compare results\NAME_A results\NAME_B --kinds local stream --labels "Client only" "Streaming"
+```
+
+It reads what the analysis already wrote to each folder (nothing is analysed again), prints the comparison and writes
+`compare_NAME_A_vs_NAME_B.html` next to the last run's folder (or `--out FILE`). The first run is the baseline the
+differences are taken from.
+
+`--kinds` says what each run was: `local` (the test app on the client itself, with no stream), `stream`, or `auto`,
+the default, which takes a run with Sunshine's or Moonlight's logs to be a stream and leaves the rest unknown. Either
+run may have Sunshine's log, Moonlight's trace, both or neither; the comparison uses what each has:
+
+- **Side by side:** host present → photon for flips and every frame, each way, pacing, frames not seen, and the
+  difference.
+- **Where the time goes:** each run's path from the host present to the photon, step by step, as far as its logs reach.
+  With both logs that's capture, first and last packet, decode, the pacer and the client present; with only Sunshine's
+  it stops at the capture; a local run is one step, the client's own present → photon.
+- **Checks:** that Moonlight's clock sync agrees with Sunshine's send times; that the client display's own delay
+  matches between runs that measure it (a local run's present → photon, a stream's client present → photon through
+  Moonlight); whether the client's decode and draw leave headroom in the frame time; whether DXGI saw frames queuing
+  on the client; whether the frames not seen look dropped or misread; and whether the trigger and the frame patches
+  agree on which way the display is slower.
+- **Takeaways:** what streaming (or the change between streams) costs, the stream's own part up to the client
+  present, pacing, the stages that changed most and the largest parts of each run.
+
+Runs analysed before this version lack two stages it uses when present (capture → last packet, and DXGI's client
+present → display): analyse them again to add them.
 
 ## Read the results
 

@@ -37,11 +37,11 @@ if (-not (Test-Path $python)) {
 Invoke-Checked "Installing the requirements" { & $python -m pip install --quiet --disable-pip-version-check -r (Join-Path $here "requirements.txt") pyinstaller }
 
 Write-Host "Bundling latency-analyzer.exe"
-# camera_mode is imported only when a Latency Cam recording is analysed, so name it for PyInstaller
+# camera_mode and compare are imported only when needed, so name them for PyInstaller
 Invoke-Checked "PyInstaller" {
     & $python -m PyInstaller --noconfirm --log-level WARN --onefile --console --name latency-analyzer `
         --distpath $BuildDir --workpath $work --specpath $work `
-        --paths $here --hidden-import camera_mode --hidden-import camera_timing --hidden-import traces `
+        --paths $here --hidden-import camera_mode --hidden-import camera_timing --hidden-import traces --hidden-import compare --hidden-import report `
         (Join-Path $here "analyze_video.py")
 }
 Write-Host "Wrote $(Join-Path $BuildDir 'latency-analyzer.exe')"

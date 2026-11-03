@@ -25,6 +25,7 @@ CAPTURE_TO_CLIENT_PRESENT = "capture -> client present (Moonlight's capture to p
 CLIENT_PRESENT_TO_PHOTON = "client present -> photon"
 CAPTURE_TO_PHOTON = "capture -> photon"
 HOST_PRESENT_TO_PHOTON = "host present -> photon"
+CLIENT_PRESENT_TO_DISPLAY = "client present -> display (DXGI)"
 
 # Moonlight stages: label, start column, end column. Missing columns (older builds) leave the stage out.
 CLIENT_STAGES = [
@@ -219,6 +220,10 @@ def analyse(joined, camera_frames, sunshine_file, moonlight_file):
         a, b = number(j["moonlight"], "first_packet_us"), number(j["moonlight"], "present_us")
         return None if not a or not b else (b - a) / 1000
 
+    def last_packet_to_present(j):
+        a, b = number(j["moonlight"], "last_packet_us"), number(j["moonlight"], "present_us")
+        return None if not a or not b else (b - a) / 1000
+
     if with_capture:
         stage(HOST_PRESENT_TO_CAPTURE, "test app + Sunshine",
               [(j["capture_us"] - j["app_present_us"]) / 1000 for j in with_capture])
@@ -228,6 +233,10 @@ def analyse(joined, camera_frames, sunshine_file, moonlight_file):
     stage("capture -> first packet", "Moonlight",
           [None if capture_to_present(j) is None or first_packet_to_present(j) is None
            else capture_to_present(j) - first_packet_to_present(j) for j in with_moonlight])
+    # When the whole frame had arrived, on the same terms: with Sunshine's capture -> sent, the network's share
+    stage("capture -> last packet", "Moonlight",
+          [None if capture_to_present(j) is None or last_packet_to_present(j) is None
+           else capture_to_present(j) - last_packet_to_present(j) for j in with_moonlight])
     for label, start, end in CLIENT_STAGES:
         values = []
         for j in with_moonlight:
@@ -235,6 +244,11 @@ def analyse(joined, camera_frames, sunshine_file, moonlight_file):
             values.append(None if a is None or b is None or a == 0 or b == 0 else (b - a) / 1000)
         stage(label, "Moonlight", values)
     stage(CAPTURE_TO_CLIENT_PRESENT, "Moonlight", [capture_to_present(j) for j in with_moonlight])
+    # DXGI's own count of how long the client's presents took to reach the display (the start of scanout); it is
+    # logged on a later row than the frame it describes, so it only makes sense as a spread over all of them
+    stage(CLIENT_PRESENT_TO_DISPLAY, "Moonlight (DXGI)",
+          [None if not number(j["moonlight"], "display_latency_us") else number(j["moonlight"], "display_latency_us") / 1000
+           for j in with_moonlight])
     for direction, rising in (("to white", True), ("to black", False)):
         # The client display's own part: the camera's capture to photon less Moonlight's capture to present
         stage(f"{CLIENT_PRESENT_TO_PHOTON}, {direction}", "camera + Sunshine + Moonlight",

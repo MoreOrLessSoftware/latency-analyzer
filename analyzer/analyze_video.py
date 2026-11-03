@@ -21,6 +21,7 @@ Usage:
   python analyze_video.py VIDEO [--report]
   python analyze_video.py results/NAME          (analyse an uploaded recording again)
   python analyze_video.py                       (list the results folders and choose one)
+  python analyze_video.py compare RUN RUN       (compare analysed results folders: see compare.py)
 
 See README.md next to this script for the whole procedure.
 """
@@ -618,5 +619,9 @@ def interactive():
 if __name__ == "__main__":
     if len(sys.argv) == 1:
         interactive()
+    elif sys.argv[1] == "compare":
+        import compare
+
+        compare.main(sys.argv[2:])
     else:
         main()

@@ -68,11 +68,23 @@ class TracesTest(unittest.TestCase):
         self.assertAlmostEqual(stages["capture -> client present (Moonlight's capture to present)"]["median"], 11.0, places=2)
         self.assertAlmostEqual(stages["client present -> photon, to white"]["median"], 19.3 - 11.0, places=2)
         self.assertAlmostEqual(stages["capture -> first packet"]["median"], 11.0 - 9.54, places=2)
+        self.assertAlmostEqual(stages["capture -> last packet"]["median"], 11.0 - 6.41, places=2)
+        # No DXGI frame statistics in this trace
+        self.assertNotIn("client present -> display (DXGI)", stages)
         # Every frame keeps the same timing, so the cross-checks show no spread at all
         self.assertLess(pipeline.checks["moonlight_capture_to_present_sd_ms"], 0.01)
         self.assertLess(pipeline.checks["photon_minus_present_sd_to_white_ms"], 0.01)
         self.assertEqual(pipeline.notes, [])
         self.assertEqual(pipeline.summary()["joined"], 40)
+
+    def test_reads_dxgis_present_to_display(self):
+        frames, sunshine, moonlight = make_run()
+        for i, row in enumerate(moonlight):
+            row["display_latency_us"] = "-1" if i % 4 == 0 else "400"  # -1: not yet shown
+        pipeline = traces.analyse(traces.join(frames, START_US, sunshine, moonlight), len(frames), "s", "m")
+        dxgi = {s.label: s.stats() for s in pipeline.stages}["client present -> display (DXGI)"]
+        self.assertEqual(dxgi["n"], 30)
+        self.assertAlmostEqual(dxgi["median"], 0.4)
 
     def test_leaves_out_stages_without_their_columns(self):
         frames, sunshine, moonlight = make_run()
