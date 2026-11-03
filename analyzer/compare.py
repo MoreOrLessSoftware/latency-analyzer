@@ -20,6 +20,7 @@ import argparse
 import csv
 import html
 import json
+import os
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -105,7 +106,8 @@ def load_run(folder, label=None, kind="auto"):
             frames.append(int(row["host_frame"]))
         except (KeyError, ValueError):
             pass
-    run = Run(folder, label or stem, kind, summary, flips, sorted(set(frames)))
+    # The folder's name, which may have been renamed to say what the run was, rather than the recording's
+    run = Run(folder, label or folder.name, kind, summary, flips, sorted(set(frames)))
     run.stages = {s["label"]: s for s in (summary.get("pipeline") or {}).get("stages", [])}
     if kind == "auto":
         run.kind = "stream" if (run.sunshine or run.moonlight) else "unknown"
@@ -662,7 +664,42 @@ def compare(folders, labels=None, kinds=None, out=None):
     """Load the runs, check them and write the report; returns (text, report path)."""
     labels = labels or [None] * len(folders)
     kinds = kinds or ["auto"] * len(folders)
-    runs = [load_run(f, l, k) for f, l, k in zip(folders, labels, kinds)]
+    return compare_runs([load_run(f, l, k) for f, l, k in zip(folders, labels, kinds)], out)
+
+
+def ask_and_compare(folders, ask=input):
+    """
+    Compare the folders, asking what each run was when its logs don't say and what to call it, then offer to open the
+    report. For running without arguments; ask is input().
+    """
+    runs = []
+    for folder in folders:
+        run = load_run(folder)
+        if run.kind == "stream":
+            print(f"\n{run.label}: a stream (it has {' and '.join(n for n, h in (('Sunshine', run.sunshine), ('Moonlight', run.moonlight)) if h)} logs)")
+        else:
+            while True:
+                answer = ask(f"\nWhat was {run.label}? l = local (the test app on the client, no stream), s = a stream, "
+                             "Enter = don't know: ").strip().lower()
+                if answer in ("", "l", "s", "local", "stream"):
+                    break
+                print("Enter l, s or nothing.")
+            run.kind = {"l": "local", "local": "local", "s": "stream", "stream": "stream"}.get(answer, "unknown")
+        label = ask(f"Name for {run.label} in the report (Enter keeps the folder's name): ").strip()
+        if label:
+            run.label = label
+        runs.append(run)
+    text, path = compare_runs(runs)
+    print()
+    print(text)
+    print(f"\nWrote {path}")
+    if hasattr(os, "startfile") and ask("\nOpen the report? [Y/n] ").strip().lower() in ("", "y", "yes"):
+        os.startfile(path)
+    return path
+
+
+def compare_runs(runs, out=None):
+    """Check loaded runs and write the report; returns (text, report path)."""
     findings = [f for r in runs for f in run_checks(r)] + pair_checks(runs)
     findings.sort(key=lambda f: {"warn": 0, "info": 1, "ok": 2}[f.level])
     notes = takeaways(runs)

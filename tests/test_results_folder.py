@@ -84,8 +84,39 @@ class ChooseRunTest(unittest.TestCase):
             self.assertIn("[Moonlight trace]", line)
             self.assertIn("not analysed", analyze_video.describe_run(runs[1]))
 
-    def test_asks_until_it_gets_a_number(self):
+    def test_lists_renamed_run_folders(self):
+        import json
+
+        import analyze_video
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            folder = root / "run_1-moonlight-6.2"  # renamed from run_1 to say what the run was
+            folder.mkdir()
+            for suffix in (".mp4", ".camera.json"):
+                (folder / f"run_1{suffix}").write_text("")
+            self.assertEqual(analyze_video.list_runs([root]), [folder])
+            self.assertIn("not analysed", analyze_video.describe_run(folder))
+            (folder / "run_1.summary.json").write_text(json.dumps({"frames": {"median": 31.0}}))
+            self.assertTrue(analyze_video.is_analysed(folder))
+            self.assertTrue(analyze_video.describe_run(folder).startswith("run_1-moonlight-6.2  "))
+            self.assertIn("host present -> photon 31.0 ms", analyze_video.describe_run(folder))
+            self.assertEqual(analyze_video.find_recording(folder), folder / "run_1.mp4")
+            # Two recordings in one folder: not a run the list can offer
+            for suffix in (".mp4", ".camera.json"):
+                (folder / f"run_2{suffix}").write_text("")
+            self.assertEqual(analyze_video.list_runs([root]), [])
+
+    def choose(self, root, answers):
         import builtins
+        from unittest import mock
+
+        import analyze_video
+
+        with mock.patch.object(analyze_video, "results_roots", return_value=[root]),                 mock.patch.object(builtins, "input", side_effect=answers), mock.patch("sys.stdout"):
+            return [f.name for f in analyze_video.choose_runs()]
+
+    def test_asks_until_it_gets_numbers(self):
         from unittest import mock
 
         import analyze_video
@@ -93,15 +124,21 @@ class ChooseRunTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             self.make_runs(root)
-            with mock.patch.object(analyze_video, "results_roots", return_value=[root]), \
-                    mock.patch.object(builtins, "input", side_effect=["x", "9", "2"]), \
-                    mock.patch("sys.stdout"):
-                self.assertEqual(analyze_video.choose_run().name, "old_run")
-            with mock.patch.object(analyze_video, "results_roots", return_value=[root]), \
-                    mock.patch.object(builtins, "input", side_effect=[""]), mock.patch("sys.stdout"):
-                self.assertIsNone(analyze_video.choose_run())
+            self.assertEqual(self.choose(root, ["x", "9", "2"]), ["old_run"])
+            self.assertEqual(self.choose(root, [""]), [])
             with mock.patch.object(analyze_video, "results_roots", return_value=[]), mock.patch("sys.stdout"):
-                self.assertIsNone(analyze_video.choose_run())
+                self.assertEqual(analyze_video.choose_runs(), [])
+
+    def test_several_numbers_compare_analysed_runs(self):
+        import json
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            self.make_runs(root)
+            # old_run isn't analysed, so it can't be compared until it is; the same run twice is refused too
+            self.assertEqual(self.choose(root, ["1 2", "1 1", ""]), [])
+            (root / "old_run" / "old_run.summary.json").write_text(json.dumps({"frames": {"median": 24.0}}))
+            self.assertEqual(self.choose(root, ["2, 1"]), ["old_run", "new_run"])
 
 
 if __name__ == "__main__":

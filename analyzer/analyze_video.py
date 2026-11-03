@@ -469,15 +469,26 @@ def parse_size(text):
         raise argparse.ArgumentTypeError(f"expected WIDTHxHEIGHT, got {text!r}")
 
 
+def recordings_in(folder):
+    """
+    The recordings in a results folder: NAME.mp4 in a folder named NAME, as uploads are saved, or else every video with
+    Latency Cam's timing file next to it, so a folder can be renamed.
+    """
+    named = folder / (folder.name + ".mp4")
+    if named.is_file() and named.with_name(folder.name + ".camera.json").is_file():
+        return [named]
+    try:
+        return [v for v in sorted(folder.glob("*.mp4")) if v.with_name(v.stem + ".camera.json").is_file()]
+    except OSError:
+        return []
+
+
 def find_recording(folder):
-    """
-    The recording in a results folder: NAME.mp4 in a folder named NAME, as uploads are saved, or else the only video
-    with Latency Cam's timing file next to it.
-    """
+    """The one recording in a results folder (see recordings_in); exits when there's none or several."""
     named = folder / (folder.name + ".mp4")
     if named.is_file():
         return named
-    videos = [v for v in sorted(folder.glob("*.mp4")) if v.with_name(v.stem + ".camera.json").is_file()]
+    videos = recordings_in(folder)
     if len(videos) == 1:
         return videos[0]
     if not videos:
@@ -529,7 +540,7 @@ def main():
 
 
 # ---------------------------------------------------------------------------------------------------------------------
-# Run without arguments: pick a results folder to analyse again
+# Run without arguments: pick results folders to analyse again or compare
 
 
 def results_roots():
@@ -547,23 +558,35 @@ def results_roots():
     return seen
 
 
+def run_recording(folder):
+    """A run folder's recording (see recordings_in), or None when it holds none or several."""
+    videos = recordings_in(folder) if folder.is_dir() else []
+    return videos[0] if len(videos) == 1 else None
+
+
 def list_runs(roots):
-    """Every run folder (one holding NAME.mp4 and NAME.camera.json) under the roots, newest first."""
+    """Every run folder (one holding a recording and its .camera.json) under the roots, newest first."""
     runs = []
     for root in roots:
         for folder in root.iterdir():
-            if folder.is_dir() and (folder / f"{folder.name}.mp4").is_file() and (folder / f"{folder.name}.camera.json").is_file():
+            if run_recording(folder) is not None:
                 runs.append(folder)
-    return sorted(runs, key=lambda f: (f / f"{f.name}.mp4").stat().st_mtime, reverse=True)
+    return sorted(runs, key=lambda f: run_recording(f).stat().st_mtime, reverse=True)
+
+
+def summary_path(folder):
+    """Where the analysis of a run folder's recording leaves its summary."""
+    video = run_recording(folder)
+    return video.with_name(video.stem + ".summary.json") if video else folder / f"{folder.name}.summary.json"
 
 
 def describe_run(folder):
     """One line about a run folder: when it was recorded, its result if analysed, and which logs it has."""
     import datetime
 
-    when = datetime.datetime.fromtimestamp((folder / f"{folder.name}.mp4").stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+    when = datetime.datetime.fromtimestamp(run_recording(folder).stat().st_mtime).strftime("%Y-%m-%d %H:%M")
     result = "not analysed"
-    summary = folder / f"{folder.name}.summary.json"
+    summary = summary_path(folder)
     if summary.is_file():
         try:
             frames = json.loads(summary.read_text(encoding="utf-8")).get("frames")
@@ -575,39 +598,65 @@ def describe_run(folder):
     return f"{folder.name}  {when}  {result}" + (f"  [{', '.join(logs)}]" if logs else "")
 
 
-def choose_run():
-    """List the run folders and ask which to analyse again; the chosen folder, or None."""
+def is_analysed(folder):
+    return summary_path(folder).is_file()
+
+
+def choose_runs():
+    """
+    List the run folders and ask which to analyse again (one number) or compare (several, the first the baseline).
+    The chosen folders, or [] to quit.
+    """
     roots = results_roots()
     runs = list_runs(roots)
     if not runs:
         print("\nNo results folders found in: " + (", ".join(str(r) for r in roots) or "results next to this program"))
-        return None
-    print("\nResults to analyse again, newest first:")
+        return []
+    print("\nResults, newest first:")
     for number, folder in enumerate(runs, 1):
         print(f"  {number:2d}. {describe_run(folder)}")
+    print("\nEnter a number to analyse that run again, or two or more (such as 3 1) to compare them, the first as the "
+          "baseline.")
     while True:
         try:
-            answer = input("\nNumber to analyse again (Enter to quit): ").strip()
+            answer = input("Runs (Enter to quit): ").strip()
         except EOFError:
-            return None
+            return []
         if not answer:
-            return None
-        if answer.isdigit() and 1 <= int(answer) <= len(runs):
-            return runs[int(answer) - 1]
-        print(f"Enter a number from 1 to {len(runs)}.")
+            return []
+        words = answer.replace(",", " ").split()
+        if not all(w.isdigit() and 1 <= int(w) <= len(runs) for w in words):
+            print(f"Enter numbers from 1 to {len(runs)}.")
+            continue
+        chosen = [runs[int(w) - 1] for w in words]
+        if len(set(chosen)) != len(chosen):
+            print("Enter each run once.")
+            continue
+        unanalysed = [f.name for f in chosen if not is_analysed(f)] if len(chosen) > 1 else []
+        if unanalysed:
+            print(f"Only analysed runs can be compared; analyse {', '.join(unanalysed)} first.")
+            continue
+        return chosen
 
 
 def interactive():
-    """Without arguments: show the usage, then offer the results folders to analyse again."""
-    print("usage: latency-analyzer VIDEO_OR_RESULTS_FOLDER [options]   (--help lists the options)")
-    folder = choose_run() if sys.stdin.isatty() else None
-    if folder is not None:
-        sys.argv = [sys.argv[0], str(folder)]
-        try:
+    """Without arguments: show the usage, then offer the results folders to analyse again or compare."""
+    print("usage: latency-analyzer VIDEO_OR_RESULTS_FOLDER [options]   (--help lists the options)\n"
+          "       latency-analyzer compare RESULTS_FOLDER RESULTS_FOLDER... [options]")
+    folders = choose_runs() if sys.stdin.isatty() else []
+    try:
+        if len(folders) == 1:
+            sys.argv = [sys.argv[0], str(folders[0])]
             main()
-        except SystemExit as error:
-            if error.code not in (None, 0):
-                print(error.code if isinstance(error.code, str) else f"Stopped ({error.code})")
+        elif len(folders) > 1:
+            import compare
+
+            compare.ask_and_compare(folders)
+    except SystemExit as error:
+        if error.code not in (None, 0):
+            print(error.code if isinstance(error.code, str) else f"Stopped ({error.code})")
+    except EOFError:
+        pass
     # A window opened by double-clicking closes as soon as the program ends, so wait
     if sys.stdin.isatty():
         try:

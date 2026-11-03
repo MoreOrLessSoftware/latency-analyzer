@@ -202,6 +202,32 @@ class CompareTest(unittest.TestCase):
         self.assertIn("dimming large bright areas", text)
         self.assertIn("17.0 ms from 10% to 90% going white", text)
 
+    def test_asks_what_unlogged_runs_were(self):
+        from unittest import mock
+
+        local = make_folder(self.root, "local", 24.0, 21.5)
+        stream = make_folder(self.root, "stream", 40.5, 37.5, FULL_STAGES)
+        # A wrong answer is asked again; the stream's logs say what it was, so only its name is asked
+        answers = iter(["x", "l", "Client only", "", "n"])
+        with mock.patch("sys.stdout"), mock.patch("os.startfile", create=True) as start:
+            path = compare.ask_and_compare([local, stream], ask=lambda prompt: next(answers))
+            start.assert_not_called()
+        page = path.read_text(encoding="utf-8")
+        self.assertIn("<h1>Client only vs stream</h1>", page)
+        self.assertIn("Client only: local", page)
+        self.assertIn("Streaming changes host present", page)
+        with mock.patch("sys.stdout"), mock.patch("os.startfile", create=True) as start:
+            answers = iter(["", "", "", ""])
+            compare.ask_and_compare([local, stream], ask=lambda prompt: next(answers))
+            start.assert_called_once()
+
+    def test_labels_runs_by_their_folder(self):
+        # A folder renamed to say what the run was keeps the recording's file names inside
+        folder = make_folder(self.root, "latency_1", 24.0, 21.5)
+        renamed = folder.rename(self.root / "latency_1-um760")
+        self.assertEqual(compare.load_run(renamed).label, "latency_1-um760")
+        self.assertEqual(compare.load_run(renamed, "Client only").label, "Client only")
+
     def test_needs_analysed_folders(self):
         (self.root / "empty").mkdir()
         with self.assertRaises(SystemExit):

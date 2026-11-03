@@ -158,7 +158,8 @@ latency-analyzer.exe results\NAME
 
 Or run `latency-analyzer.exe` with no arguments, or double-click it: it lists the results folders it finds (next to
 itself, in the current folder and in `Documents\Latency Cam`), newest first, with each one's result and which logs it
-holds, and asks which to analyse again.
+holds, and asks which to analyse again. Enter two or more numbers instead, such as `3 1`, to
+[compare those runs](#compare-runs), the first as the baseline.
 
 It finds `NAME.mp4`, its timing file, the host log copy and any logs in the folder, takes the stream's size from the
 test app's log and its frame rate from what the test app presented while filming, and writes the report back into the
@@ -195,6 +196,9 @@ latency-analyzer.exe compare results\NAME_A results\NAME_B --kinds local stream 
 It reads what the analysis already wrote to each folder (nothing is analysed again), prints the comparison and writes
 `compare_NAME_A_vs_NAME_B.html` next to the last run's folder (or `--out FILE`). The first run is the baseline the
 differences are taken from.
+
+Run with no arguments, it does the same for the runs you pick from the list: it asks what each run without logs was
+(local, a stream, or don't know) and a name for each in the report, and offers to open the report when it's done.
 
 `--kinds` says what each run was: `local` (the test app on the client itself, with no stream), `stream`, or `auto`,
 the default, which takes a run with Sunshine's or Moonlight's logs to be a stream and leaves the rest unknown. Either
