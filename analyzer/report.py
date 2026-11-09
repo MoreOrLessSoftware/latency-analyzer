@@ -233,13 +233,16 @@ def histogram(values, bin_ms=0.5, label="ms"):
     x_of = lambda v: left + (v + reach) / (2 * reach) * (width - left - right)
     y_of = lambda c: top + (1 - c / highest) * (height - top - bottom)
     parts = [f'<svg class="chart" viewBox="0 0 {width} {height}" role="img" aria-label="Histogram">']
-    step = nice_step(reach, 5)
-    v = -step * np.floor(reach / step)
-    while v <= reach + 1e-9:
+    # A gridline every 1 ms whatever the range, so runs compare at a glance; labels thin out only if they'd crowd
+    min_label_px = 24
+    label_every = 1
+    while label_every / (2 * reach) * (width - left - right) < min_label_px:
+        label_every = int(nice_step(label_every * 2, 1))
+    for v in range(-int(np.floor(reach)), int(np.floor(reach)) + 1):
         x = x_of(v)
         parts.append(f'<line class="grid" x1="{x:.1f}" x2="{x:.1f}" y1="{top}" y2="{height - bottom}"/>')
-        parts.append(f'<text class="tick" x="{x:.1f}" y="{height - bottom + 16}" text-anchor="middle">{v:+g}</text>')
-        v += step
+        if v % label_every == 0:
+            parts.append(f'<text class="tick" x="{x:.1f}" y="{height - bottom + 16}" text-anchor="middle">{v:+g}</text>')
     parts.append(f'<text class="tick" x="{width - right}" y="{height - 4}" text-anchor="end">{html.escape(label)}</text>')
     bar = (width - left - right) / len(counts)
     total = max(values.size, 1)
