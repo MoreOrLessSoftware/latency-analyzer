@@ -229,6 +229,7 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
     bool resize_pending = false;  ///< Set when the window size changed.
     bool toggle_vsync = false;  ///< Set when V was pressed.
     bool toggle_auto = false;  ///< Set when A was pressed.
+    double other_noise = 0;  ///< Noise amplitude N switches to; swapped with options.noise on each press.
     latency_test::upload_server_t *upload_server = nullptr;  ///< Latency Cam's upload server, when running.
     std::filesystem::path results_dir;  ///< Where uploads and their results are saved.
     bool exit_requested = false;  ///< Set when the app was closed during an upload or analysis, to wait for it.
@@ -521,6 +522,10 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
       else if (vkey == 'F') {
         app.fps_entry.start();
         app.status_text.clear();
+      }
+      else if (vkey == 'N') {
+        // N toggles the background noise on and off
+        std::swap(app.options.noise, app.other_noise);
       }
       else {
         queue_input(app, 'k', vkey, qpc);
@@ -1316,6 +1321,8 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
   int run(const latency_test::options_t &options) {
     app_t app;
     app.options = options;
+    // Started without noise, N turns on the default amount
+    app.other_noise = options.noise > 0 ? 0 : latency_test::options_t {}.noise;
 
     LARGE_INTEGER frequency;
     QueryPerformanceFrequency(&frequency);
