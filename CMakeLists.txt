@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.25)
 
 project(ml-latency-analyzer
-        VERSION 0.1
+        VERSION 0.2
         DESCRIPTION "Camera based input to photon latency testing for game streaming"
         LANGUAGES CXX)
 
