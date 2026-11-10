@@ -68,7 +68,7 @@ img { max-width: 100%; border-radius: 4px; }
 .files { color: var(--text-2); font-size: 13px; }
 </style></head><body><main>
 <h1>Sample-Test_20261110-123842.mp4</h1>
-<p class="sub">Stream 2560x1440 at 97 fps &middot; Latency Cam, Google Pixel 10 Pro, 240 fps, 10.5 s</p>
+<p class="sub">Test pattern 2560x1440 at 97 fps &middot; Latency Cam, Google Pixel 10 Pro, 240 fps, 10.5 s</p>
 <div class="tiles"><div class="tile"><div class="label">Host present &rarr; photon, flips, median</div><div class="value">12.62 <small>ms</small></div></div><div class="tile"><div class="label">Host present &rarr; photon, every frame, median</div><div class="value">11.21 <small>ms</small></div></div><div class="tile"><div class="label">Pacing, client &minus; host interval, sd</div><div class="value">0.34 <small>ms</small></div></div><div class="tile"><div class="label">Uneven frame intervals</div><div class="value">0.0% <small>of 1017</small></div></div><div class="tile"><div class="label">Frames not seen</div><div class="value">0 <small>of 1018</small></div></div></div>
 <h2>Notes</h2>
 <div class="note">Present held the test app for 10.1 ms of every 10.3 ms frame, at 97.0 fps, below the display&#x27;s 100 Hz: most likely RTSS&#x27;s frame rate limit, which waits inside the app&#x27;s Present. Host present times are when the app called Present, so they leave the wait out when the limiter hands the frame on before waiting.</div>
