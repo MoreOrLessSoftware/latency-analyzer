@@ -1,0 +1,107 @@
+{
+ "video": "Moonlight-Test_20261110-150108.mp4",
+ "flips": {
+  "n": 38,
+  "median": 20.368,
+  "mean": 20.157,
+  "sd": 0.739,
+  "p10": 19.244,
+  "p90": 20.954
+ },
+ "flips_to_white": {
+  "n": 19,
+  "median": 19.395,
+  "mean": 19.441,
+  "sd": 0.228,
+  "p10": 19.207,
+  "p90": 19.691
+ },
+ "flips_to_black": {
+  "n": 19,
+  "median": 20.842,
+  "mean": 20.873,
+  "sd": 0.125,
+  "p10": 20.74,
+  "p90": 21.032
+ },
+ "frames": {
+  "n": 1016,
+  "median": 19.366,
+  "mean": 19.075,
+  "sd": 0.931,
+  "p10": 17.767,
+  "p90": 20.095
+ },
+ "frames_to_white": {
+  "n": 507,
+  "median": 18.259,
+  "mean": 18.22,
+  "sd": 0.485,
+  "p10": 17.496,
+  "p90": 18.876
+ },
+ "frames_to_black": {
+  "n": 509,
+  "median": 19.932,
+  "mean": 19.927,
+  "sd": 0.203,
+  "p10": 19.664,
+  "p90": 20.178
+ },
+ "edge_difference_ms": 1.673,
+ "present_wait": {
+  "inside_present": {
+   "n": 1016,
+   "median": 10.182,
+   "mean": 10.18,
+   "sd": 0.008,
+   "p10": 10.173,
+   "p90": 10.186
+  },
+  "interval_ms": 10.309,
+  "refresh_hz": 100.0,
+  "kind": "limiter"
+ },
+ "pacing": {
+  "mismatch": {
+   "n": 1015,
+   "median": 0.018,
+   "mean": 0.0,
+   "sd": 0.375,
+   "p10": -0.519,
+   "p90": 0.476
+  },
+  "host_interval": {
+   "n": 1015,
+   "median": 10.309,
+   "mean": 10.309,
+   "sd": 0.01,
+   "p10": 10.301,
+   "p90": 10.318
+  },
+  "client_interval": {
+   "n": 1015,
+   "median": 10.327,
+   "mean": 10.309,
+   "sd": 0.375,
+   "p10": 9.792,
+   "p90": 10.785
+  },
+  "uneven": 0,
+  "pairs": 1015,
+  "frames_seen": 1016,
+  "frames_presented": 1016,
+  "not_seen": 0
+ },
+ "sync": {
+  "min_rtt_ms": 2.183,
+  "scatter_ms": 0.1092,
+  "drift_ppm": 29.24
+ },
+ "notes": [
+  "Present held the test app for 10.2 ms of every 10.3 ms frame, at 97.0 fps, below the display's 100 Hz: most likely RTSS's frame rate limit, which waits inside the app's Present. Host present times are when the app called Present, so they leave the wait out when the limiter hands the frame on before waiting.",
+  "The display takes 1.7 ms longer to reach halfway going white to black, so the latencies are shown for each direction, and the pacing figures are corrected for it: otherwise frames timed by opposite edges would look unevenly spaced."
+ ],
+ "report": "Moonlight-Test_20261110-150108.report.html",
+ "pipeline": null
+}

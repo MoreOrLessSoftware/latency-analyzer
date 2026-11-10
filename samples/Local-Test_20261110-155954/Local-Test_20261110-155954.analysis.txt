@@ -1,0 +1,53 @@
+Reading Local-Test_20261110-155954.mp4, timed by Local-Test_20261110-155954.camera.json
+  read 100/2589 frames
+  read 200/2589 frames
+  read 300/2589 frames
+  read 400/2589 frames
+  read 500/2589 frames
+  read 600/2589 frames
+  read 700/2589 frames
+  read 800/2589 frames
+  read 900/2589 frames
+  read 1000/2589 frames
+  read 1100/2589 frames
+  read 1200/2589 frames
+  read 1300/2589 frames
+  read 1400/2589 frames
+  read 1500/2589 frames
+  read 1600/2589 frames
+  read 1700/2589 frames
+  read 1800/2589 frames
+  read 1900/2589 frames
+  read 2000/2589 frames
+  read 2100/2589 frames
+  read 2200/2589 frames
+  read 2300/2589 frames
+  read 2400/2589 frames
+  read 2500/2589 frames
+
+Video:       2589 frames at 240 fps = 10.79 s; stream 2560x1440
+Bullseyes:   found in 2589/2589 frames
+Clock sync:  24 of 455 exchanges used; fastest round trip 3.81 ms (median 5.94); scatter 0.164 ms; phone clock +33.2 ppm against the host's
+Flips:       36 seen, 36 matched to the host log (184 logged)
+Host:        inside Present n=1046 median  10.14  mean  10.12  sd  0.06  p10  10.04  p90  10.17  min   9.76  max  10.19 ms; presenting every 10.31 ms at 100 Hz
+
+Host present to photon, ms:
+  trigger flips  n=36  median  11.28  mean  11.22  sd  0.57  p10  10.42  p90  11.96  min  10.22  max  12.29 ms
+    to white     n=18  median  10.75  mean  10.70  sd  0.24  p10  10.38  p90  10.98  min  10.22  max  11.15 ms
+    to black     n=18  median  11.66  mean  11.74  sd  0.23  p10  11.50  p90  11.99  min  11.41  max  12.29 ms
+  every frame    n=1047 median  10.16  mean   9.92  sd  0.74  p10   8.84  p90  10.75  min   8.29  max  11.08 ms
+    to white     n=523 median   9.27  mean   9.27  sd  0.46  p10   8.63  p90   9.86  min   8.29  max  10.42 ms
+    to black     n=524 median  10.57  mean  10.57  sd  0.20  p10  10.31  p90  10.84  min  10.01  max  11.08 ms
+
+Pacing:      1047 frames seen of 1047 presented in that time (0 not seen)
+  host interval     n=1046 median  10.31  mean  10.31  sd  0.06  p10  10.25  p90  10.37  min  10.04  max  10.73 ms
+  client interval   n=1046 median  10.31  mean  10.31  sd  0.40  p10   9.78  p90  10.82  min   9.13  max  11.81 ms
+  client - host     n=1046 median   0.00  mean   0.00  sd  0.38  p10  -0.50  p90   0.49  min  -1.16  max   1.21 ms
+  (client times corrected for the display reaching halfway +1.31 ms later going to black)
+  uneven            0 of 1046 intervals off by more than a quarter frame
+Note: Present held the test app for 10.1 ms of every 10.3 ms frame, at 97.0 fps, below the display's 100 Hz: most likely RTSS's frame rate limit, which waits inside the app's Present. Host present times are when the app called Present, so they leave the wait out when the limiter hands the frame on before waiting.
+Note: The fastest clock sync round trip was 3.8 ms. The sync assumes the request and reply took equally long, so every time here could be off by up to half that, the same way for all of them. A wired link or a quieter network brings it down.
+Note: The display takes 1.3 ms longer to reach halfway going white to black, so the latencies are shown for each direction, and the pacing figures are corrected for it: otherwise frames timed by opposite edges would look unevenly spaced.
+
+Wrote Local-Test_20261110-155954.flips.csv, Local-Test_20261110-155954.frames.csv, Local-Test_20261110-155954.summary.json and Local-Test_20261110-155954.regions.png in C:\Users\derek\Projects\ml-latency-analyzer\cmake-build-release\results\Local-Test_20261110-155954
+Wrote C:\Users\derek\Projects\ml-latency-analyzer\cmake-build-release\results\Local-Test_20261110-155954\Local-Test_20261110-155954.report.html

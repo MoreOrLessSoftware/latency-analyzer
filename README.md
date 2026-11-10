@@ -67,11 +67,19 @@ above and below it, a bullseye in each corner, and the status band at the top:
 
 ![Latency Cam's results tab](samples/latency-cam-result.png)
 
-**The report** for the same run. Click it to open the
-[full sample report](https://htmlpreview.github.io/?https://github.com/MoreOrLessSoftware/latency-analyzer/blob/main/samples/Sample-Test_20261110-123842/Sample-Test_20261110-123842.report.html),
-or browse everything the run produced in [its results folder](samples/Sample-Test_20261110-123842):
+**A report** for a local run: the test app on the client itself at 97 fps, with the background noise off, as a
+[baseline](#measuring-a-stream-against-a-baseline). Click it to open the
+[full sample report](https://htmlpreview.github.io/?https://github.com/MoreOrLessSoftware/latency-analyzer/blob/main/samples/Local-Test_20261110-155954/Local-Test_20261110-155954.report.html),
+or browse everything the run produced in [its results folder](samples/Local-Test_20261110-155954):
 
-[![The sample report](samples/sample-test-report.png)](https://htmlpreview.github.io/?https://github.com/MoreOrLessSoftware/latency-analyzer/blob/main/samples/Sample-Test_20261110-123842/Sample-Test_20261110-123842.report.html)
+[![The sample report](samples/sample-test-report.png)](https://htmlpreview.github.io/?https://github.com/MoreOrLessSoftware/latency-analyzer/blob/main/samples/Local-Test_20261110-155954/Local-Test_20261110-155954.report.html)
+
+**A comparison** of that baseline with the same client streaming the test app through Moonlight (HEVC at 80 Mbps) at
+the same frame rate, which shows what streaming adds. Click it to open the
+[full comparison](https://htmlpreview.github.io/?https://github.com/MoreOrLessSoftware/latency-analyzer/blob/main/samples/compare_Local-Test_20261110-155954_vs_Moonlight-Test_20261110-150108.html),
+or browse [the stream run's results folder](samples/Moonlight-Test_20261110-150108):
+
+[![The sample comparison](samples/sample-test-comparison.png)](https://htmlpreview.github.io/?https://github.com/MoreOrLessSoftware/latency-analyzer/blob/main/samples/compare_Local-Test_20261110-155954_vs_Moonlight-Test_20261110-150108.html)
 
 ## Project Structure
 
@@ -163,7 +171,7 @@ pass `--results`.
 |---|---|
 | `--vsync` | Starts with v-sync on: waits for vertical blank. By default the app presents straight away, with tearing, so it adds no wait of its own. **V** toggles it while running. |
 | `--noise <0..1>` | Background noise amplitude, default 0.5. The noise keeps the encoder near its bitrate; 0 turns it off. |
-| `--no-noise` | Flat gray background, so frames stay small (same as `--noise 0`). |
+| `--no-noise` | Flat gray background, so frames stay small (same as `--noise 0`). Use it for a [local baseline](#measuring-a-stream-against-a-baseline). |
 | `--fps <n>` | Background update rate. The default is [RTSS's frame rate limit](#frame-limiters-and-rtss) when RivaTuner Statistics Server is running and sets one for the app, else the display's refresh rate. **F** changes it while running. |
 | `--log <path>` | CSV log of each flip, timed with the host's QPC. The default is `%TEMP%\latency_test.csv`. Every frame's render and present times go to the same name ending `.frames.csv`. |
 | `--no-auto` | Starts without automatic flips. By default the trigger flips on its own every 150–400 ms, at random, as well as on key presses; automatic flips land on the next scheduled frame, so the frame rate stays steady. **A** toggles them while running. |
@@ -197,13 +205,14 @@ RTSS's limit or the display's refresh rate. A key press is answered straight awa
 shown on the next scheduled frame instead, which keeps the cadence steady for measuring pacing.
 
 Keys, on the host or through the stream; none of them counts as a flip, and each change is noted in both logs
-(`# auto=`, `# vsync=`, `# fps=`):
+(`# auto=`, `# vsync=`, `# fps=`, `# noise=`):
 
 | Key | Does |
 |---|---|
 | **A** | Toggles automatic flips. |
 | **V** | Toggles v-sync. With v-sync on and no `--fps`, the display sets the pace: each present waits for the display to take the previous frame, so frames follow its refresh instead of the app's timer. That adds about a frame of latency. Each frame's line in `.frames.csv` records whether v-sync was on. |
 | **F** | Types a new frame rate in the status band: digits, `.` and Backspace edit it, Enter applies it (nothing typed goes back to the default: RTSS's limit or the display's refresh rate) and Esc cancels. A rate a little under the display's maximum, such as 97 at 100 Hz, keeps a VRR display following the app's frames. |
+| **N** | Toggles the background noise: off, or back to `--noise`'s amplitude (0.5 when started with `--no-noise`). |
 | **Esc** | Quits (or cancels typing a frame rate). While Latency Cam is uploading, an analysis is running or the phone hasn't downloaded the report yet, the test pattern closes and a small window shows the progress; it closes by itself, and the app with it, when everything is done (it gives the phone up to 15 s to start an analysis or download a report). **Close anyway** quits at once: an analysis then carries on in the background and still saves its report on the host, but the phone can't fetch it. |
 
 ## Measure
@@ -235,8 +244,8 @@ A stream's host present → photon includes the client display's own delay, whic
 from one display to the next. To see what the stream itself adds, record a baseline of the client display without the
 stream, then stream to it at the same frame rate:
 
-1. **Baseline:** run `latency-test.exe` on the client itself, fullscreen on the display you'll stream to, and record
-   it with Latency Cam. This measures the client's own present → photon.
+1. **Baseline:** run `latency-test.exe --no-noise` on the client itself, fullscreen on the display you'll stream to,
+   and record it with Latency Cam. This measures the client's own present → photon.
 2. **Stream:** stream `latency-test.exe` from the host to the same client and display, and record it again.
 3. **Compare:** `latency-analyzer.exe compare results\BASELINE results\STREAM --kinds local stream` (see
    [Compare runs](#compare-runs)). The difference is what streaming adds: capture, encoding, the network, decoding and
@@ -247,6 +256,11 @@ it: each frame waits up to a frame time at several steps, and VRR only follows f
 the same rate in both with `--fps` or **F** (the status band shows the rate presented), and keep v-sync, the frame
 limiter, the display's refresh rate and its settings the same. The test app on the client and on the host each logs on
 its own clock, so the two runs can be filmed one after the other, with Latency Cam pointed at whichever is running.
+
+The one difference to make is the background noise: leave it on for the stream and turn it off for the baseline. The
+noise keeps a stream's encoder near its bitrate, as a game would, but a local run has no encoder, and drawing the
+noise takes the client's GPU time that the stream's client never spends. In one test that added about 1 ms to the
+baseline, which made what streaming adds read 1 ms low. The comparison notes a local run that had the noise on.
 
 ### Analyse again
 
@@ -260,7 +274,7 @@ latency-analyzer.exe results\NAME
 Or run `latency-analyzer.exe` with no arguments, or double-click it: it lists the results folders it finds (next to
 itself, in the current folder and in `Documents\Latency Cam`), newest first, with each one's result and which logs it
 holds, and asks which to analyse again. Enter two or more numbers instead, such as `3 1`, to
-[compare those runs](#compare-runs), the first as the baseline.
+[compare those runs](#compare-runs), the first as the baseline (a local run always is).
 
 It finds `NAME.mp4`, its timing file, the host log copy and any logs in the folder, takes the stream's size from the
 test app's log and its frame rate from what the test app presented while filming, and writes the report back into the
@@ -297,7 +311,8 @@ latency-analyzer.exe compare results\NAME_A results\NAME_B --kinds local stream 
 
 It reads what the analysis already wrote to each folder (nothing is analysed again), prints the comparison and writes
 `compare_NAME_A_vs_NAME_B.html` next to the last run's folder (or `--out FILE`). The first run is the baseline the
-differences are taken from.
+differences are taken from, except that a run marked local always is: comparing a local run with a stream then shows
+how much time streaming adds, whichever order they're given in.
 
 Run with no arguments, it does the same for the runs you pick from the list: it asks what each run without logs was
 (local, a stream, or don't know) and a name for each in the report, and offers to open the report when it's done.

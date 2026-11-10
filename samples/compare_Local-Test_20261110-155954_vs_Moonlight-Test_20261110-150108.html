@@ -1,0 +1,124 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Compare Client Local vs Moonlight HEVC (80 Mbps)</title><style>
+:root {
+  color-scheme: light;
+  --bg: #f6f6f4; --surface: #fcfcfb; --border: #e2e1dc;
+  --text: #0b0b0b; --text-2: #52514e; --muted: #8a8984;
+  --series: #2a78d6; --series-2: #eb6834; --grid: #e8e7e3; --warn-bg: #fff6e0; --warn-border: #eda100;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #121211; --surface: #1a1a19; --border: #2e2e2c;
+    --text: #f0efec; --text-2: #c3c2b7; --muted: #8f8e86;
+    --series: #3987e5; --series-2: #d95926; --grid: #2a2a28; --warn-bg: #2b2412; --warn-border: #c98500;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #121211; --surface: #1a1a19; --border: #2e2e2c;
+  --text: #f0efec; --text-2: #c3c2b7; --muted: #8f8e86;
+  --series: #3987e5; --series-2: #d95926; --grid: #2a2a28; --warn-bg: #2b2412; --warn-border: #c98500;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, "Segoe UI", sans-serif; }
+main { max-width: 860px; margin: 0 auto; padding: 24px 16px 48px; }
+h1 { font-size: 22px; margin: 0 0 2px; word-break: break-all; }
+h2 { font-size: 16px; margin: 28px 0 8px; }
+.sub { color: var(--text-2); margin: 0 0 20px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.tile { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; }
+.tile .label { color: var(--text-2); font-size: 13px; }
+.tile .value { font-size: 28px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.tile .value small { font-size: 15px; font-weight: 400; color: var(--text-2); }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+th, td { padding: 4px 10px; text-align: right; white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; }
+thead th { color: var(--text-2); font-weight: 500; border-bottom: 1px solid var(--border); }
+tbody th { font-weight: 500; }
+.legend { color: var(--text-2); font-size: 13px; margin: 4px 0 0; }
+.legend svg { vertical-align: -2px; }
+svg.chart { width: 100%; height: auto; display: block; }
+svg .grid { stroke: var(--grid); stroke-width: 1; }
+svg .axis { stroke: var(--muted); stroke-width: 1; }
+svg .tick { fill: var(--text-2); font-size: 11px; }
+svg .tick.frame { fill: var(--muted); }
+svg .dot { fill: var(--series); }
+svg .dot.hollow { fill: var(--surface); stroke: var(--series); stroke-width: 2; }
+svg .hit:hover .dot { stroke: var(--text); stroke-width: 2; }
+svg .dots circle { fill: var(--series); fill-opacity: 0.6; }
+svg .dots circle.fall { fill: var(--series-2); }
+svg .seg.client { fill: var(--series-2); }
+svg .seg.stream { fill: var(--series); }
+svg .seg.stream.hollow { fill: var(--surface); stroke: var(--series); stroke-width: 2; }
+svg .hit.unlogged .seg { opacity: 0.45; }
+svg .hit:hover .seg { filter: brightness(1.15); }
+svg .median { stroke: var(--text-2); stroke-width: 1.5; stroke-dasharray: 5 4; }
+svg .median-label { fill: var(--text); }
+#tip { position: fixed; pointer-events: none; background: var(--text); color: var(--bg); padding: 4px 8px; border-radius: 4px;
+       font-size: 13px; display: none; white-space: nowrap; z-index: 10; }
+.note { background: var(--warn-bg); border-left: 3px solid var(--warn-border); padding: 8px 12px; margin: 8px 0; border-radius: 4px; }
+dl { display: grid; grid-template-columns: max-content 1fr; gap: 2px 16px; margin: 0; }
+dt { color: var(--text-2); }
+dd { margin: 0; }
+details summary { cursor: pointer; color: var(--text-2); }
+.scroll { overflow-x: auto; }
+.scroll img { max-width: none; height: 200px; }
+img { max-width: 100%; border-radius: 4px; }
+.files { color: var(--text-2); font-size: 13px; }
+
+svg .seg.host { fill: var(--series); }
+svg .seg.client { fill: var(--series-2); }
+svg .seg.display { fill: var(--series-3); }
+svg .seg.whole { fill: var(--muted); }
+svg .bar-label { fill: var(--text); font-size: 12px; }
+svg .seg-label { fill: #fff; font-size: 11px; }
+:root { --series-3: #1baf7a; }
+:root[data-theme="dark"] { --series-3: #199e70; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --series-3: #199e70; } }
+.check { padding: 6px 12px; margin: 6px 0; border-radius: 4px; border-left: 3px solid var(--border); background: var(--surface); }
+.check.warn { background: var(--warn-bg); border-left-color: var(--warn-border); }
+.check .tag { font-weight: 600; margin-right: 6px; }
+td.delta { color: var(--text-2); }
+ul.takeaways li { margin: 4px 0; }
+</style></head><body><main>
+<h1>Client Local vs Moonlight HEVC (80 Mbps)</h1>
+<p class="sub">Client Local: local &middot; Moonlight HEVC (80 Mbps): stream</p>
+<div class="tiles"><div class="tile"><div class="label">Added by streaming, host present &rarr; photon, to black (Moonlight HEVC (80 Mbps) over Client Local)</div><div class="value">+9.36 <small>ms</small></div></div><div class="tile"><div class="label">Added by streaming, host present &rarr; photon, to white (Moonlight HEVC (80 Mbps) over Client Local)</div><div class="value">+8.99 <small>ms</small></div></div><div class="tile"><div class="label">Pacing sd, Client Local / Moonlight HEVC (80 Mbps)</div><div class="value">0.38 / 0.38 <small>ms</small></div></div></div>
+<h2>Takeaways</h2>
+<div class="card"><ul class="takeaways"><li>Streaming adds 9.4 ms going black and 9.0 ms going white to host present → photon (every frame, median) over running on the client.</li><li>Pacing is the same in every run (client − host interval sd 0.38, 0.38 ms): the stream adds no measurable unevenness.</li></ul></div>
+<h2>Host present &rarr; photon, by stage</h2>
+<div class="card"><svg class="chart" viewBox="0 0 760 162" role="img" aria-label="Host present to photon of each run, by stage"><line class="grid" x1="170.0" x2="170.0" y1="8" y2="128"/><text class="tick" x="170.0" y="144" text-anchor="middle">0</text><line class="grid" x1="312.5" x2="312.5" y1="8" y2="128"/><text class="tick" x="312.5" y="144" text-anchor="middle">5</text><line class="grid" x1="455.0" x2="455.0" y1="8" y2="128"/><text class="tick" x="455.0" y="144" text-anchor="middle">10</text><line class="grid" x1="597.5" x2="597.5" y1="8" y2="128"/><text class="tick" x="597.5" y="144" text-anchor="middle">15</text><line class="grid" x1="740.0" x2="740.0" y1="8" y2="128"/><text class="tick" x="740.0" y="144" text-anchor="middle">20</text><text class="tick" x="740" y="158" text-anchor="end">ms after the host present</text><text class="bar-label" x="162" y="27.0" text-anchor="end">Client Local, to black</text><g class="hit" data-tip="Present → photon on the client: 10.57 ms (from 0.00 to 10.57)"><rect class="seg display" x="170.0" y="13.0" width="299.4" height="20" rx="2"/><text class="seg-label" x="319.7" y="27.0" text-anchor="middle">10.6</text></g><text class="tick" x="475.4" y="27.0">10.6</text><text class="bar-label" x="162" y="57.0" text-anchor="end">Client Local, to white</text><g class="hit" data-tip="Present → photon on the client: 9.27 ms (from 0.00 to 9.27)"><rect class="seg display" x="170.0" y="43.0" width="262.1" height="20" rx="2"/><text class="seg-label" x="301.1" y="57.0" text-anchor="middle">9.3</text></g><text class="tick" x="438.1" y="57.0">9.3</text><text class="bar-label" x="162" y="87.0" text-anchor="end">Moonlight HEVC (80 Mbps), to black</text><g class="hit" data-tip="Host present → photon: 19.93 ms (from 0.00 to 19.93)"><rect class="seg whole" x="170.0" y="73.0" width="566.1" height="20" rx="2"/><text class="seg-label" x="453.0" y="87.0" text-anchor="middle">19.9</text></g><text class="tick" x="742.1" y="87.0">19.9</text><text class="bar-label" x="162" y="117.0" text-anchor="end">Moonlight HEVC (80 Mbps), to white</text><g class="hit" data-tip="Host present → photon: 18.26 ms (from 0.00 to 18.26)"><rect class="seg whole" x="170.0" y="103.0" width="518.4" height="20" rx="2"/><text class="seg-label" x="429.2" y="117.0" text-anchor="middle">18.3</text></g><text class="tick" x="694.4" y="117.0">18.3</text></svg><p class="legend"><svg width="12" height="12"><rect width="12" height="12" rx="2" class="seg display" style="fill: var(--series-3)"/></svg> Client display: present → photon &nbsp; <svg width="12" height="12"><rect width="12" height="12" rx="2" class="seg whole" style="fill: var(--muted)"/></svg> Not broken down. Hover a segment for its stage. Medians of each stage, so a bar adds up to its run&#39;s measured host present &rarr; photon median.</p></div>
+<h2>Side by side, medians</h2>
+<div class="card"><table><thead><tr><th></th><th>Client Local</th><th>Moonlight HEVC (80 Mbps)</th><th>Added by streaming</th></tr></thead><tbody>
+<tr><th>Host present → photon, every frame, to black</th><td>10.57 ms</td><td>19.93 ms</td><td class="delta">+9.36</td></tr>
+<tr><th>Host present → photon, every frame, to white</th><td>9.27 ms</td><td>18.26 ms</td><td class="delta">+8.99</td></tr>
+<tr><th>Host present → photon, every frame</th><td>10.16 ms</td><td>19.37 ms</td><td class="delta">+9.20</td></tr>
+<tr><th>Host present → photon, trigger flips</th><td>11.28 ms</td><td>20.37 ms</td><td class="delta">+9.09</td></tr>
+<tr><th>Host present → photon, flips to white</th><td>10.75 ms</td><td>19.39 ms</td><td class="delta">+8.64</td></tr>
+<tr><th>Host present → photon, flips to black</th><td>11.66 ms</td><td>20.84 ms</td><td class="delta">+9.18</td></tr>
+<tr><th>Pacing, client − host interval, sd</th><td>0.38 ms</td><td>0.38 ms</td><td class="delta">-0.00</td></tr>
+<tr><th>Uneven intervals</th><td>0.0%</td><td>0.0%</td><td class="delta">+0.0</td></tr>
+<tr><th>Frames not seen</th><td>0</td><td>0</td><td class="delta">+0</td></tr>
+<tr><th>Frames presented while filming</th><td>1047</td><td>1016</td><td class="delta">-31</td></tr>
+<tr><th>Host frame interval</th><td>10.30 ms</td><td>10.31 ms</td><td class="delta">+0.00</td></tr>
+<tr><th>Inside Present</th><td>10.14 ms</td><td>10.18 ms</td><td class="delta">+0.04</td></tr>
+<tr><th>Display edge difference (to black − to white)</th><td>1.31 ms</td><td>1.67 ms</td><td class="delta">+0.36</td></tr>
+<tr><th>Clock sync, fastest round trip</th><td>3.81 ms</td><td>2.18 ms</td><td class="delta">-1.63</td></tr>
+</tbody></table></div>
+<h2>Checks</h2>
+<p class="legend">Nothing to check: the runs have no stage logs and nothing stands out.</p>
+<p class="files">Runs: Local-Test_20261110-155954, Moonlight-Test_20261110-150108</p>
+<div id="tip"></div></main><script>
+const tip = document.getElementById('tip');
+document.querySelectorAll('[data-tip]').forEach(el => {
+  el.addEventListener('mousemove', e => {
+    tip.textContent = el.dataset.tip;
+    tip.style.display = 'block';
+    const x = Math.min(e.clientX + 12, window.innerWidth - tip.offsetWidth - 8);
+    tip.style.left = x + 'px';
+    tip.style.top = (e.clientY - 34) + 'px';
+  });
+  el.addEventListener('mouseleave', () => { tip.style.display = 'none'; });
+});
+</script></body></html>

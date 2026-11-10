@@ -1,0 +1,108 @@
+{
+ "video": "Local-Test_20261110-155954.mp4",
+ "flips": {
+  "n": 36,
+  "median": 11.279,
+  "mean": 11.221,
+  "sd": 0.569,
+  "p10": 10.419,
+  "p90": 11.961
+ },
+ "flips_to_white": {
+  "n": 18,
+  "median": 10.751,
+  "mean": 10.704,
+  "sd": 0.244,
+  "p10": 10.378,
+  "p90": 10.984
+ },
+ "flips_to_black": {
+  "n": 18,
+  "median": 11.657,
+  "mean": 11.738,
+  "sd": 0.232,
+  "p10": 11.498,
+  "p90": 11.987
+ },
+ "frames": {
+  "n": 1047,
+  "median": 10.162,
+  "mean": 9.921,
+  "sd": 0.738,
+  "p10": 8.839,
+  "p90": 10.746
+ },
+ "frames_to_white": {
+  "n": 523,
+  "median": 9.267,
+  "mean": 9.272,
+  "sd": 0.458,
+  "p10": 8.629,
+  "p90": 9.862
+ },
+ "frames_to_black": {
+  "n": 524,
+  "median": 10.575,
+  "mean": 10.568,
+  "sd": 0.203,
+  "p10": 10.309,
+  "p90": 10.842
+ },
+ "edge_difference_ms": 1.308,
+ "present_wait": {
+  "inside_present": {
+   "n": 1046,
+   "median": 10.139,
+   "mean": 10.119,
+   "sd": 0.058,
+   "p10": 10.036,
+   "p90": 10.169
+  },
+  "interval_ms": 10.305,
+  "refresh_hz": 100.0,
+  "kind": "limiter"
+ },
+ "pacing": {
+  "mismatch": {
+   "n": 1046,
+   "median": 0.004,
+   "mean": 0.0,
+   "sd": 0.379,
+   "p10": -0.503,
+   "p90": 0.493
+  },
+  "host_interval": {
+   "n": 1046,
+   "median": 10.305,
+   "mean": 10.309,
+   "sd": 0.06,
+   "p10": 10.25,
+   "p90": 10.371
+  },
+  "client_interval": {
+   "n": 1046,
+   "median": 10.313,
+   "mean": 10.309,
+   "sd": 0.396,
+   "p10": 9.776,
+   "p90": 10.82
+  },
+  "uneven": 0,
+  "pairs": 1046,
+  "frames_seen": 1047,
+  "frames_presented": 1047,
+  "not_seen": 0
+ },
+ "sync": {
+  "min_rtt_ms": 3.814,
+  "scatter_ms": 0.1638,
+  "drift_ppm": 33.22
+ },
+ "notes": [
+  "Present held the test app for 10.1 ms of every 10.3 ms frame, at 97.0 fps, below the display's 100 Hz: most likely RTSS's frame rate limit, which waits inside the app's Present. Host present times are when the app called Present, so they leave the wait out when the limiter hands the frame on before waiting.",
+  "The fastest clock sync round trip was 3.8 ms. The sync assumes the request and reply took equally long, so every time here could be off by up to half that, the same way for all of them. A wired link or a quieter network brings it down.",
+  "The display takes 1.3 ms longer to reach halfway going white to black, so the latencies are shown for each direction, and the pacing figures are corrected for it: otherwise frames timed by opposite edges would look unevenly spaced."
+ ],
+ "report": "Local-Test_20261110-155954.report.html",
+ "pipeline": null
+}
