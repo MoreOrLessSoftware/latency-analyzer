@@ -51,7 +51,24 @@ itself, at the same frame rate, and compare the two runs (see
 
 ## Screenshots & Sample Results
 
-TODO
+**The test pattern** that `latency-test.exe` shows, with the trigger square in the middle, the frame and input numbers
+above and below it, a bullseye in each corner, and the status band at the top:
+
+![The test pattern](samples/sample-test-pattern.png)
+
+**Latency Cam recording** the test pattern on the client display, with clock sync to the host shown in green:
+
+![Latency Cam recording the display](samples/latency-cam-test.png)
+
+**Latency Cam's results**, once the host has analysed the upload:
+
+![Latency Cam's results tab](samples/latency-cam-result.png)
+
+**The report** for the same run. Click it to open the
+[full sample report](https://htmlpreview.github.io/?https://github.com/MoreOrLessSoftware/latency-analyzer/blob/main/samples/Sample-Test_20261110-123842/Sample-Test_20261110-123842.report.html),
+or browse everything the run produced in [its results folder](samples/Sample-Test_20261110-123842):
+
+[![The sample report](samples/sample-test-report.png)](https://htmlpreview.github.io/?https://github.com/MoreOrLessSoftware/latency-analyzer/blob/main/samples/Sample-Test_20261110-123842/Sample-Test_20261110-123842.report.html)
 
 ## Project Structure
 

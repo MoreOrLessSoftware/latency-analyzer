@@ -1,3 +1,5 @@
 cmake-build-*/
 __pycache__/
 *.pyc
+plans/
+samples/**/*.mp4
