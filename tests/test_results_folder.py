@@ -107,6 +107,44 @@ class ChooseRunTest(unittest.TestCase):
                 (folder / f"run_2{suffix}").write_text("")
             self.assertEqual(analyze_video.list_runs([root]), [])
 
+    def test_lists_analysed_runs_without_their_video(self):
+        import json
+
+        import analyze_video
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            self.make_runs(root)
+            (root / "new_run" / "new_run.mp4").unlink()  # left out to save space
+            self.assertEqual([r.name for r in analyze_video.list_runs([root])], ["new_run", "old_run"])
+            line = analyze_video.describe_run(root / "new_run")
+            self.assertIn("host present -> photon 20.0 ms", line)
+            self.assertIn("no video", line)
+            # Without its video an unanalysed run is nothing to offer
+            (root / "old_run" / "old_run.mp4").unlink()
+            self.assertEqual([r.name for r in analyze_video.list_runs([root])], ["new_run"])
+            # It can't be analysed again, but it can be compared
+            (root / "other").mkdir()
+            for suffix in (".mp4", ".camera.json"):
+                (root / "other" / f"other{suffix}").write_text("")
+            (root / "other" / "other.summary.json").write_text(json.dumps({"frames": {"median": 25.0}}))
+            new_run = [r.name for r in analyze_video.list_runs([root])].index("new_run") + 1
+            self.assertEqual(self.choose(root, [str(new_run), ""]), [])
+            self.assertEqual(sorted(self.choose(root, ["1 2"])), ["new_run", "other"])
+
+    def test_looks_in_the_current_folder_too(self):
+        import os
+
+        import analyze_video
+
+        with tempfile.TemporaryDirectory() as d:
+            cwd = os.getcwd()
+            os.chdir(d)
+            try:
+                self.assertIn(Path(d).resolve(), analyze_video.results_roots())
+            finally:
+                os.chdir(cwd)
+
     def choose(self, root, answers):
         import builtins
         from unittest import mock

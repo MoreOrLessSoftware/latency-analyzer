@@ -544,9 +544,13 @@ def main():
 
 
 def results_roots():
-    """Where uploaded results may be: next to this program (or the bundled exe), the current folder, and Documents."""
+    """
+    Where uploaded results may be: next to this program (or the bundled exe), the current folder (in a results folder,
+    or run folders directly in it), and Documents.
+    """
     here = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
-    roots = [here / "results", here.parent / "results", Path.cwd() / "results", Path.home() / "Documents" / "Latency Cam"]
+    roots = [here / "results", here.parent / "results", Path.cwd() / "results", Path.cwd(),
+             Path.home() / "Documents" / "Latency Cam"]
     seen = []
     for root in roots:
         try:
@@ -564,27 +568,61 @@ def run_recording(folder):
     return videos[0] if len(videos) == 1 else None
 
 
+def run_summary_only(folder):
+    """
+    The summary of an analysed run folder whose video is gone (left out to save space, say), or None. Such a run can
+    still be compared, but not analysed again.
+    """
+    try:
+        if not folder.is_dir() or any(folder.glob("*.mp4")):
+            return None
+        named = folder / f"{folder.name}.summary.json"
+        summaries = [named] if named.is_file() else sorted(folder.glob("*.summary.json"))
+    except OSError:
+        return None
+    return summaries[0] if len(summaries) == 1 else None
+
+
+def run_time_file(folder):
+    """The file whose time is when a run was recorded: the video, or without it the timing file or summary."""
+    video = run_recording(folder)
+    if video:
+        return video
+    summary = run_summary_only(folder)
+    timing = summary.with_name(summary.name[: -len(".summary.json")] + ".camera.json")
+    return timing if timing.is_file() else summary
+
+
 def list_runs(roots):
-    """Every run folder (one holding a recording and its .camera.json) under the roots, newest first."""
+    """
+    Every run folder under the roots, newest first: one holding a recording and its .camera.json, or an analysed run
+    without its video.
+    """
     runs = []
     for root in roots:
-        for folder in root.iterdir():
-            if run_recording(folder) is not None:
+        try:
+            folders = list(root.iterdir())
+        except OSError:
+            continue
+        for folder in folders:
+            if folder not in runs and (run_recording(folder) is not None or run_summary_only(folder) is not None):
                 runs.append(folder)
-    return sorted(runs, key=lambda f: run_recording(f).stat().st_mtime, reverse=True)
+    return sorted(runs, key=lambda f: run_time_file(f).stat().st_mtime, reverse=True)
 
 
 def summary_path(folder):
     """Where the analysis of a run folder's recording leaves its summary."""
     video = run_recording(folder)
-    return video.with_name(video.stem + ".summary.json") if video else folder / f"{folder.name}.summary.json"
+    if video:
+        return video.with_name(video.stem + ".summary.json")
+    return run_summary_only(folder) or folder / f"{folder.name}.summary.json"
 
 
 def describe_run(folder):
     """One line about a run folder: when it was recorded, its result if analysed, and which logs it has."""
     import datetime
 
-    when = datetime.datetime.fromtimestamp(run_recording(folder).stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+    when = datetime.datetime.fromtimestamp(run_time_file(folder).stat().st_mtime).strftime("%Y-%m-%d %H:%M")
     result = "not analysed"
     summary = summary_path(folder)
     if summary.is_file():
@@ -595,6 +633,8 @@ def describe_run(folder):
             result = "analysed"
     logs = [label for label, pattern in (("Sunshine log", "sunshine-frames-*.csv"), ("Moonlight trace", "Moonlight-pacing-*.csv"))
             if any(folder.glob(pattern))]
+    if run_recording(folder) is None:
+        logs.append("no video")
     return f"{folder.name}  {when}  {result}" + (f"  [{', '.join(logs)}]" if logs else "")
 
 
@@ -616,7 +656,7 @@ def choose_runs():
     for number, folder in enumerate(runs, 1):
         print(f"  {number:2d}. {describe_run(folder)}")
     print("\nEnter a number to analyse that run again, or two or more (such as 3 1) to compare them, the first as the "
-          "baseline.")
+          "baseline (a local run always is).")
     while True:
         try:
             answer = input("Runs (Enter to quit): ").strip()
@@ -631,6 +671,9 @@ def choose_runs():
         chosen = [runs[int(w) - 1] for w in words]
         if len(set(chosen)) != len(chosen):
             print("Enter each run once.")
+            continue
+        if len(chosen) == 1 and run_recording(chosen[0]) is None:
+            print(f"{chosen[0].name} has no video, so it can't be analysed again; it can still be compared.")
             continue
         unanalysed = [f.name for f in chosen if not is_analysed(f)] if len(chosen) > 1 else []
         if unanalysed:
