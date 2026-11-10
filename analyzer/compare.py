@@ -66,6 +66,21 @@ class Run:
     def moonlight(self):
         return bool((self.summary.get("pipeline") or {}).get("moonlight_trace"))
 
+    @property
+    def noise(self):
+        """The background noise's amplitude while filming (0 for none), or None when it changed or isn't known."""
+        return self.summary.get("noise")
+
+    def describe(self):
+        """What the run was, for the report's heading: its kind, noise and logs."""
+        parts = [self.kind]
+        if self.noise is not None:
+            parts.append(f"noise {self.noise:g}" if self.noise > 0 else "no noise")
+        logs = [n for n, has in (("Sunshine", self.sunshine), ("Moonlight", self.moonlight)) if has]
+        if logs:
+            parts.append(f"{' and '.join(logs)} logs")
+        return ", ".join(parts)
+
     def median(self, key):
         """A median from the summary ('frames_to_black') or a stage ('host present -> capture'), or None."""
         if key in self.stages:
@@ -361,10 +376,19 @@ def pair_checks(runs):
             if local is not None and wa != wb:
                 text += (f" {local.label}'s present time is when the test app called Present, before the client's GPU "
                          "had drawn the frame, so it includes the drawing, which Moonlight's present (made after "
-                         "drawing) doesn't. If that's the cause, running it again with --no-noise shrinks the gap.")
+                         "drawing) doesn't. If that's the cause, the gap shrinks when the local run is recorded with "
+                         "--no-noise.")
             else:
                 text += " The display's settings, the client's present mode or Moonlight's clock sync differ between the runs."
             found.append(Finding("warn", text))
+    if any(r.kind == "stream" for r in runs):
+        for r in runs:
+            if r.kind == "local" and r.noise:
+                found.append(Finding("info", f"{r.label} drew the background noise (amplitude {r.noise:g}). On the "
+                                     "client's GPU that adds to its host present → photon, about 1 ms in one test, "
+                                     "which the stream's client doesn't spend, so what streaming adds reads that much "
+                                     "low. Record the local run with --no-noise: the noise only keeps a stream's "
+                                     "encoder busy, and a local run has none."))
     return found
 
 
@@ -410,6 +434,11 @@ def stage_rows(runs):
     return [(label, [r.stages[label]["median"] if label in r.stages else None for r in runs]) for label in labels]
 
 
+def streaming_pair(runs):
+    """Whether the comparison is a local run against a stream, so the difference is what streaming adds."""
+    return len(runs) == 2 and (runs[0].kind, runs[1].kind) == ("local", "stream")
+
+
 def stream_part(run):
     """Host present -> client present: what the stream itself adds before the client display, or None."""
     points = dict(milestones(run))
@@ -424,7 +453,11 @@ def takeaways(runs):
           if a.median(f"frames_to_{d}") is not None and b.median(f"frames_to_{d}") is not None]
     if da:
         deltas = " and ".join(f"{v:+.1f} ms going {d}" for d, v in da)
-        if (a.kind, b.kind) == ("local", "stream"):
+        if (a.kind, b.kind) == ("local", "stream") and all(v >= 0 for _, v in da):
+            added = " and ".join(f"{v:.1f} ms going {d}" for d, v in da)
+            out.append(f"Streaming adds {added} to host present → photon (every frame, median) over running on the "
+                       "client.")
+        elif (a.kind, b.kind) == ("local", "stream"):
             out.append(f"Streaming changes host present → photon by {deltas} (every frame, median) against running "
                        "on the client.")
         else:
@@ -481,11 +514,11 @@ def fmt(value, decimals=2, unit=""):
 def text_report(runs, findings, notes):
     lines = ["Runs:"]
     for r in runs:
-        logs = [n for n, has in (("Sunshine", r.sunshine), ("Moonlight", r.moonlight)) if has]
-        lines.append(f"  {r.label}: {r.kind}" + (f", with {' and '.join(logs)} logs" if logs else "") + f"  ({r.folder})")
+        lines.append(f"  {r.label}: {r.describe()}  ({r.folder})")
     lines.append("")
     width = max(len(n) for n, *_ in headline_rows(runs)) + 2
-    lines.append(" " * width + "".join(f"{r.label[:14]:>16}" for r in runs) + ("            Δ" if len(runs) == 2 else ""))
+    delta_head = "        added" if streaming_pair(runs) else "            Δ"
+    lines.append(" " * width + "".join(f"{r.label[:14]:>16}" for r in runs) + (delta_head if len(runs) == 2 else ""))
     for name, values, unit, decimals in headline_rows(runs):
         row = f"{name:<{width}}" + "".join(f"{fmt(v, decimals):>16}" for v in values)
         if len(runs) == 2 and None not in values and not name.startswith("  "):
@@ -588,16 +621,18 @@ def html_report(path, runs, findings, notes):
     out = [f'<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">'
            f'<title>Compare {esc(" vs ".join(r.label for r in runs))}</title><style>{STYLE}{COMPARE_STYLE}</style></head><body><main>']
     out.append(f'<h1>{esc(" vs ".join(r.label for r in runs))}</h1>')
-    out.append('<p class="sub">' + " &middot; ".join(
-        f'{esc(r.label)}: {r.kind}' + (f' ({esc(", ".join(n for n, h in (("Sunshine", r.sunshine), ("Moonlight", r.moonlight)) if h))} logs)'
-                                       if r.sunshine or r.moonlight else "") for r in runs) + "</p>")
+    out.append('<p class="sub">' + " &middot; ".join(f'{esc(r.label)}: {esc(r.describe())}' for r in runs) + "</p>")
 
     a, b = runs[0], runs[-1]
     tiles = []
     for d in ("black", "white"):
         va, vb = a.median(f"frames_to_{d}"), b.median(f"frames_to_{d}")
         if va is not None and vb is not None:
-            tiles.append((f"Host present &rarr; photon, to {d}, {esc(b.label)} &minus; {esc(a.label)}", f"{vb - va:+.2f} <small>ms</small>"))
+            if streaming_pair(runs):
+                label = f"Added by streaming, host present &rarr; photon, to {d} ({esc(b.label)} over {esc(a.label)})"
+            else:
+                label = f"Host present &rarr; photon, to {d}, {esc(b.label)} &minus; {esc(a.label)}"
+            tiles.append((label, f"{vb - va:+.2f} <small>ms</small>"))
     for r in runs:
         part = stream_part(r)
         if part is not None:
@@ -617,7 +652,8 @@ def html_report(path, runs, findings, notes):
         out.append(f'<div class="card">{chart}</div>')
 
     out.append("<h2>Side by side, medians</h2>")
-    head = "".join(f"<th>{esc(r.label)}</th>" for r in runs) + ("<th>&Delta;</th>" if len(runs) == 2 else "")
+    delta_head = "Added by streaming" if streaming_pair(runs) else "&Delta;"
+    head = "".join(f"<th>{esc(r.label)}</th>" for r in runs) + (f"<th>{delta_head}</th>" if len(runs) == 2 else "")
     out.append(f'<div class="card"><table><thead><tr><th></th>{head}</tr></thead><tbody>')
     for name, values, unit, decimals in headline_rows(runs):
         if name.startswith("  "):
@@ -699,7 +735,11 @@ def ask_and_compare(folders, ask=input):
 
 
 def compare_runs(runs, out=None):
-    """Check loaded runs and write the report; returns (text, report path)."""
+    """
+    Check loaded runs and write the report; returns (text, report path). Local runs go first, so the baseline is a run
+    without a stream when there is one, and the differences show what streaming adds.
+    """
+    runs = sorted(runs, key=lambda r: r.kind != "local")
     findings = [f for r in runs for f in run_checks(r)] + pair_checks(runs)
     findings.sort(key=lambda f: {"warn": 0, "info": 1, "ok": 2}[f.level])
     notes = takeaways(runs)
@@ -713,7 +753,8 @@ def compare_runs(runs, out=None):
 def main(argv):
     parser = argparse.ArgumentParser(prog="latency-analyzer compare", description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("runs", type=Path, nargs="+", help="analysed results folders, the first taken as the baseline")
+    parser.add_argument("runs", type=Path, nargs="+",
+                        help="analysed results folders, the first taken as the baseline (a local run always is)")
     parser.add_argument("--kinds", nargs="+", choices=("local", "stream", "auto"),
                         help="what each run was, in order: local (on the client, no stream), stream, or auto (stream "
                              "when it has Sunshine's or Moonlight's logs, else unknown)")

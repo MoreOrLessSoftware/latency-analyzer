@@ -20,6 +20,7 @@ from camera_timing import (
     load_camera_timing,
     load_host_log,
     match_trigger_flips,
+    noise_levels,
     normalize,
     pacing_stats,
     patch_turned_white,
@@ -201,7 +202,9 @@ def run(args, timing_path):
         host.frames[:, 0].astype(np.int64),
     )
 
-    wait = present_wait(filmed_frames(host, timing, fit), host.header)
+    filmed = filmed_frames(host, timing, fit)
+    wait = present_wait(filmed, host.header)
+    noise = noise_levels(host, int(filmed[0, 0]), int(filmed[-1, 0])) if len(filmed) else []
 
     # Outputs
     flips_csv = stem.with_name(stem.name + ".flips.csv")
@@ -269,6 +272,9 @@ def run(args, timing_path):
     notes = [outside_log] if outside_log else []
     if wait.note:
         notes.append(wait.note)
+    if len(noise) > 1:
+        notes.append("The background noise was switched with N while filming (" + " then ".join(f"{n:g}" for n in noise)
+                     + "). Drawing it takes the GPU time, so latencies may differ between the two parts.")
 
     # Sunshine's frame log and Moonlight's pacing trace, when they were saved with the recording
     sunshine_paths, moonlight_paths = traces.find(dict.fromkeys([args.video.parent, out_dir]), args.sunshine_frames, args.moonlight_trace)
@@ -323,6 +329,8 @@ def run(args, timing_path):
         "frames_to_white": stats(frame_rise),
         "frames_to_black": stats(frame_fall),
         "edge_difference_ms": round(edge_difference, 3),
+        # The background noise's amplitude while filming: 0 for none, null when it changed or the log doesn't say
+        "noise": noise[0] if len(noise) == 1 else None,
         "present_wait": {"inside_present": stats(wait.wait_ms), "interval_ms": round(wait.interval_ms, 3),
                          "refresh_hz": wait.refresh_hz, "kind": wait.kind},
         "pacing": {
@@ -359,6 +367,7 @@ def run(args, timing_path):
             "edge_difference": edge_difference,
             "pipeline": pipeline,
             "present_wait": wait,
+            "noise": noise[0] if len(noise) == 1 else None,
         }
         write_camera_report(report_path, info, flip_rows, frame_rows, pacing, notes,
                             {"flips": flips_csv, "frames": frames_csv, "regions": regions_path})

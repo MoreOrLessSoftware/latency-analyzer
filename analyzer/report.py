@@ -276,6 +276,9 @@ def write_camera_report(path, info, flips, frames, pacing, notes, files):
            f'<title>Latency {esc(Path(info["video"]).stem)}</title><style>{STYLE}</style></head><body><main>']
     out.append(f'<h1>{esc(Path(info["video"]).name)}</h1>')
     stream_text = f'{info["stream"][0]}x{info["stream"][1]}' + (f' at {stream_fps:g} fps' if stream_fps else "")
+    noise = info.get("noise")
+    if noise is not None:
+        stream_text += f", noise {noise:g}" if noise > 0 else ", no noise"
     out.append(f'<p class="sub">Test pattern {stream_text} &middot; Latency Cam, {esc(info["device"])}, {info["fps"]:g} fps, '
                f'{info["frames"] / info["fps"]:.1f} s</p>')
 

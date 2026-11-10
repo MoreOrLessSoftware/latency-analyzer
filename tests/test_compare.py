@@ -41,7 +41,7 @@ FULL_STAGES = [
 
 
 def make_folder(root, name, black, white, stages=None, sunshine=True, moonlight=True, missing=(), mismatch_sd=0.45,
-                flips=(None, None), edge_difference=2.5):
+                flips=(None, None), edge_difference=2.5, noise=None):
     """A results folder as the analysis leaves it: summary, flips and frames."""
     folder = Path(root) / name
     folder.mkdir()
@@ -61,6 +61,7 @@ def make_folder(root, name, black, white, stages=None, sunshine=True, moonlight=
         "frames_to_white": stats(white),
         "frames_to_black": stats(black),
         "edge_difference_ms": edge_difference,
+        "noise": noise,
         "present_wait": {"inside_present": stats(8.3), "interval_ms": 8.55, "refresh_hz": 120, "kind": "limiter"},
         "pacing": {"mismatch": stats(0.0, mismatch_sd), "host_interval": stats(8.55), "client_interval": stats(8.55),
                    "uneven": 2, "pairs": 199, "frames_seen": len(frames), "frames_presented": 200,
@@ -115,7 +116,7 @@ class CompareTest(unittest.TestCase):
         self.assertEqual(display[0].level, "warn")
         self.assertIn("--no-noise", display[0].text)
         notes = compare.takeaways(runs)
-        self.assertTrue(notes[0].startswith("Streaming changes host present → photon by +16.5 ms going black"))
+        self.assertTrue(notes[0].startswith("Streaming adds 16.5 ms going black and 16.0 ms going white to host present"))
         self.assertTrue(any("20.7 ms is the stream's own part" in n for n in notes))
         self.assertTrue(any("the stream adds no measurable unevenness" in n for n in notes))
 
@@ -131,6 +132,39 @@ class CompareTest(unittest.TestCase):
         # The console text is plain ASCII, for Windows consoles
         text.encode("ascii")
         self.assertIn("Client present -> photon, to black", text)
+
+    def test_local_run_is_the_baseline_whatever_the_order(self):
+        local = make_folder(self.root, "local", 24.0, 21.5)
+        stream = make_folder(self.root, "stream", 40.5, 37.5, FULL_STAGES)
+        text, path = compare.compare([stream, local], ["Stream", "Local"], ["auto", "local"])
+        self.assertEqual(path, self.root / "compare_local_vs_stream.html")
+        page = path.read_text(encoding="utf-8")
+        self.assertIn("<h1>Local vs Stream</h1>", page)
+        self.assertIn("Added by streaming, host present &rarr; photon, to black (Stream over Local)", page)
+        self.assertIn("+16.50 <small>ms</small>", page)
+        self.assertIn("<th>Added by streaming</th>", page)
+        self.assertIn("Streaming adds 16.5 ms going black", text)
+        # Two streams keep their order and a plain difference
+        other = make_folder(self.root, "other", 43.5, 40.5, FULL_STAGES)
+        page = compare.compare([stream, other])[1].read_text(encoding="utf-8")
+        self.assertIn("<th>&Delta;</th>", page)
+        self.assertIn("other &minus; stream", page)
+
+    def test_local_run_with_noise_against_a_stream(self):
+        local = make_folder(self.root, "local", 24.0, 21.5, noise=0.5)
+        stream = make_folder(self.root, "stream", 40.5, 37.5, noise=0.5)
+        runs = [compare.load_run(local, "Local", "local"), compare.load_run(stream, "Stream", "stream")]
+        self.assertEqual(runs[0].describe(), "local, noise 0.5")
+        noisy = [f for f in self.findings(runs) if "drew the background noise" in f.text]
+        self.assertEqual(len(noisy), 1)
+        self.assertIn("--no-noise", noisy[0].text)
+        # Without noise, or with no stream to compare against, there's nothing to say
+        quiet = make_folder(self.root, "quiet", 23.0, 20.5, noise=0.0)
+        runs = [compare.load_run(quiet, "Local", "local"), compare.load_run(stream, "Stream", "stream")]
+        self.assertEqual(runs[0].describe(), "local, no noise")
+        self.assertFalse(any("drew the background noise" in f.text for f in self.findings(runs)))
+        runs = [compare.load_run(local, "A", "local"), compare.load_run(quiet, "B", "local")]
+        self.assertFalse(any("drew the background noise" in f.text for f in self.findings(runs)))
 
     def test_two_streams_with_different_logs(self):
         # One with only Sunshine's log, one with only Moonlight's: neither places the client's stages on the host's
@@ -215,7 +249,7 @@ class CompareTest(unittest.TestCase):
         page = path.read_text(encoding="utf-8")
         self.assertIn("<h1>Client only vs stream</h1>", page)
         self.assertIn("Client only: local", page)
-        self.assertIn("Streaming changes host present", page)
+        self.assertIn("Streaming adds 16.5 ms going black", page)
         with mock.patch("sys.stdout"), mock.patch("os.startfile", create=True) as start:
             answers = iter(["", "", "", ""])
             compare.ask_and_compare([local, stream], ask=lambda prompt: next(answers))

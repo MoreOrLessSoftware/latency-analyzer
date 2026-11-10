@@ -198,6 +198,9 @@ class HostLog:
     frames: np.ndarray  # rows of frame, render s, present call s, present return s, input seq
     start_qpc: int
     frequency: int
+    # (from frame, amplitude) for the background noise: the amplitude it started with, from frame 0, then each change
+    # made with N. Empty for logs older than the noise option.
+    noise: list = field(default_factory=list)
 
     def qpc_to_seconds(self, qpc_seconds_absolute):
         """Convert absolute QPC seconds (ticks / frequency) to seconds since start_qpc."""
@@ -212,6 +215,32 @@ def parse_header(lines):
             for key, value in re.findall(r"(\w+)=(\S+)", line):
                 header[key] = value
     return header
+
+
+def parse_noise(lines):
+    """The background noise's (from frame, amplitude) steps: the starting amplitude from the header, then N's changes."""
+    steps = []
+    for line in lines:
+        if not line.startswith("#"):
+            continue
+        change = re.match(r"#\s*noise=(\S+) from frame (\d+)", line)
+        if change:
+            steps.append((int(change.group(2)), float(change.group(1))))
+        elif not steps and "width=" in line:
+            start = re.search(r"\bnoise=(\S+)", line)
+            if start:
+                steps.append((0, float(start.group(1))))
+    return steps
+
+
+def noise_levels(host, first_frame, last_frame):
+    """The noise amplitudes shown from first_frame to last_frame, in order; empty when the log doesn't say."""
+    levels = []
+    for i, (start, amplitude) in enumerate(host.noise):
+        end = host.noise[i + 1][0] if i + 1 < len(host.noise) else None
+        if start <= last_frame and (end is None or end > first_frame) and amplitude not in levels:
+            levels.append(amplitude)
+    return levels
 
 
 def frames_path_for(log_path):
@@ -249,6 +278,7 @@ def load_host_log(log_path):
         frames=np.array(frames, dtype=np.float64).reshape(-1, 5),
         start_qpc=int(header["start_qpc"]),
         frequency=int(header["qpc_frequency"]),
+        noise=parse_noise(lines),
     )
 
 

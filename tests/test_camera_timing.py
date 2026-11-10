@@ -26,6 +26,7 @@ from camera_timing import (  # noqa: E402
     load_camera_timing,
     load_host_log,
     match_trigger_flips,
+    noise_levels,
     pacing_stats,
     patch_turned_white,
     present_wait,
@@ -128,6 +129,23 @@ class HostLogTest(unittest.TestCase):
         np.testing.assert_allclose(log.flips[0], [1, 0, 12e-6, 5])
         np.testing.assert_allclose(log.frames[:, 0], [5, 6])
         self.assertAlmostEqual(log.frames[1, 2], 21e-6)
+
+    def test_reads_the_noise_and_its_changes(self):
+        header = ("# latency-test\n# start_qpc=100 qpc_frequency=10000000\n"
+                  "# width=2560 height=1440 refresh_hz=100 fps=97 vsync=false tearing=true noise=0.5\n")
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "run.csv").write_text(header + "seq,source,detail,input_us,render_us,present_call_us,present_return_us,frame,still_queued\n"
+                                             "# noise=0 from frame 200\n# fps=60 fps_source=option from frame 250\n"
+                                             "# noise=0.5 from frame 300\n")
+            log = load_host_log(Path(d) / "run.csv")
+        self.assertEqual(log.noise, [(0, 0.5), (200, 0.0), (300, 0.5)])
+        self.assertEqual(noise_levels(log, 10, 150), [0.5])
+        self.assertEqual(noise_levels(log, 210, 290), [0.0])
+        self.assertEqual(noise_levels(log, 150, 250), [0.5, 0.0])
+        self.assertEqual(noise_levels(log, 310, 400), [0.5])
+        # Logs from before the noise option say nothing
+        log.noise = []
+        self.assertEqual(noise_levels(log, 0, 100), [])
 
     def test_rejects_other_files(self):
         with tempfile.TemporaryDirectory() as d:

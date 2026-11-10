@@ -239,6 +239,7 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
     bool resize_pending = false;  ///< Set when the window size changed.
     bool toggle_vsync = false;  ///< Set when V was pressed.
     bool toggle_auto = false;  ///< Set when A was pressed.
+    bool toggle_noise = false;  ///< Set when N was pressed.
     double other_noise = 0;  ///< Noise amplitude N switches to; swapped with options.noise on each press.
     bool qr_mode = false;  ///< Showing the QR code instead of the test pattern.
     std::atomic<bool> pattern_requested {false};  ///< Set when an input or Latency Cam asks to leave the QR code.
@@ -634,7 +635,7 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
       }
       else if (vkey == 'N') {
         // N toggles the background noise on and off
-        std::swap(app.options.noise, app.other_noise);
+        app.toggle_noise = true;
       }
       else {
         queue_input(app, 'k', vkey, qpc);
@@ -1381,6 +1382,21 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
   }
 
   /**
+   * @brief Switch the background noise between its two amplitudes (see other_noise), and note the change in both logs.
+   *
+   * @param app App state.
+   */
+  void toggle_noise(app_t &app) {
+    std::swap(app.options.noise, app.other_noise);
+    const std::string note = std::format("# noise={} from frame {}\n", app.options.noise, app.frame);
+    for (std::FILE *log : {app.log, app.frames_log}) {
+      if (log) {
+        std::fputs(note.c_str(), log);
+      }
+    }
+  }
+
+  /**
    * @brief Change the background frame rate, and note the change in both logs and on screen.
    *
    * @param app App state.
@@ -1743,6 +1759,10 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
       if (app.toggle_auto) {
         app.toggle_auto = false;
         set_auto_flip(app, !app.options.auto_flip, qpc_now());
+      }
+      if (app.toggle_noise) {
+        app.toggle_noise = false;
+        toggle_noise(app);
       }
       if (app.new_fps) {
         set_fps(app, *app.new_fps);
