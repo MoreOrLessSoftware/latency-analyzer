@@ -21,28 +21,31 @@ and compare the two (see [Measuring a stream against a baseline](#measuring-a-st
 
 ## Quick Start Latency Measurement
 
-1. **Download** the latest release from the
-   [Releases page](https://github.com/MoreOrLessSoftware/latency-analyzer/releases): `LatencyAnalyzer-VERSION-windows.zip`,
-   which holds `latency-test.exe` and `latency-analyzer.exe`, and the Latency Cam app, `LatencyCam-VERSION.apk`.
+1. **Download** `LatencyAnalyzer-VERSION-windows.zip`, which holds `latency-test.exe` and `latency-analyzer.exe`, from
+   the latest release on the [Releases page](https://github.com/MoreOrLessSoftware/latency-analyzer/releases). The
+   Latency Cam app, `LatencyCam-VERSION.apk`, is there too, but you don't need to fetch it now: the phone can get it
+   in step 4.
 2. **Unzip** the Windows zip into a folder you can write to, such as `C:\Tools\latency-test`, on the PC that will run
    the test (to measure a stream, that's the streaming host). Results are saved in a `results` folder there, so avoid
    Program Files.
-3. **Install Latency Cam** on the phone: copy the APK over (or download it on the phone) and open it, allowing installs
-   from that source when Android asks. The phone has to film 1920x1080 at 240 fps (see [What you need](#what-you-need)).
-4. **Start the test app:** run `latency-test.exe`. The first time, Windows asks whether to allow it through the
+3. **Start the test app:** run `latency-test.exe`. The first time, Windows asks whether to allow it through the
    firewall: allow it on private networks, or the phone can't reach it. It opens fullscreen on a QR code.
    - To measure the PC's own display, run it on that PC.
    - To measure a stream, add `latency-test.exe` as an app in the streaming host (in Sunshine: Applications, Add New,
      Command) and start it from the client, so the QR code shows on the client display.
-5. **Connect the phone:** with the phone on the same network as the PC, scan the QR code with the phone's camera. It
+4. **Connect the phone:** with the phone on the same network as the PC, scan the QR code with the phone's camera. It
    opens Latency Cam with the PC's address filled in. Wait for the sync line to turn green.
-6. **Record:** on the **Recording** tab, enter a test name and point the phone at the display so the whole QR code
+
+   If Latency Cam isn't installed yet, the QR code opens its download page instead. Download the APK there and open
+   it, allowing installs from your browser when Android asks, then scan the QR code again. The phone has to film
+   1920x1080 at 240 fps (see [What you need](#what-you-need)).
+5. **Record:** on the **Recording** tab, enter a test name and point the phone at the display so the whole QR code
    screen is in view, ideally with the phone on a stand. Once the view is steady, the PC switches to the test pattern,
    the phone counts down from 3 and records for 20 s. Keep all four corner bullseyes in shot until it stops.
-7. **Analyse:** choose **Upload & analyze**. The test pattern shows the upload and analysis progress, and the phone
+6. **Analyse:** choose **Upload & analyze**. The test pattern shows the upload and analysis progress, and the phone
    switches to the **Results** tab with the headline numbers when it's done. **Open report** shows the full report.
    Keep `latency-test.exe` running until then.
-8. **Finish:** press Esc on the PC to quit the test app. The recording and its report stay in `results\NAME` next to
+7. **Finish:** press Esc on the PC to quit the test app. The recording and its report stay in `results\NAME` next to
    `latency-test.exe`, and the phone keeps a copy of the report.
 
 To find out how much latency streaming adds rather than the total, repeat this with the test app running on the client
