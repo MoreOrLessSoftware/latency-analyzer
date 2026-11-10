@@ -146,6 +146,28 @@ public class MainActivity extends Activity implements Recorder.Listener {
         WifiManager wifi = getSystemService(WifiManager.class);
         wifiLock = wifi.createWifiLock(WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "latency-cam");
         applyHost(prefs.getString("host", ""));
+        openLink(getIntent());
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        openLink(intent);
+    }
+
+    /**
+     * Take the host's address from the link that opened the app. Only that: starting needs the QR code in the camera's
+     * view, so a link can't set off a recording.
+     *
+     * @param intent The intent that opened the app.
+     */
+    private void openLink(Intent intent) {
+        SessionLink link = SessionLink.parse(intent.getDataString());
+        // Changing host mid-recording would lose the clock sync samples it needs
+        if (link != null && !recorder.isRecording()) {
+            useHostFrom(link);
+        }
     }
 
     // -----------------------------------------------------------------------------------------------------------------

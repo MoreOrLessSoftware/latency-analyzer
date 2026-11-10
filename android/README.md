@@ -19,6 +19,21 @@ The phone needs a back camera with constrained high speed video at 1920x1080 and
 timestamps from the `REALTIME` source. Check with `adb shell dumpsys media.camera`
 (`availableHighSpeedVideoConfigurations` and `android.sensor.info.timestampSource`). The Pixel 10 Pro qualifies.
 
+Scanning the QR code on `latency-test`'s first screen with the phone's camera opens the app, through an Android App
+Link verified against <https://moreorlesssoftware.github.io/.well-known/assetlinks.json>. That file lists the
+fingerprints of the signing keys allowed to handle the link.
+
+Release builds (`./gradlew assembleRelease`) are signed with the key named in `~/.latency-cam/signing.properties`:
+
+```
+storeFile=release.p12
+keyAlias=latency-cam
+password=...
+```
+
+Back that folder up. An update has to be signed with the same key, and replacing the key means updating
+`assetlinks.json`.
+
 ## Use
 
 1. On the host, run `latency-test.exe`, which answers clock sync requests on UDP port 48100 and takes uploads on TCP

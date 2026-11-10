@@ -2,6 +2,13 @@ plugins {
     id 'com.android.application'
 }
 
+// The release key stays out of the repo. Without this file a release build comes out unsigned.
+def releaseSigning = new Properties()
+def releaseSigningFile = new File(System.getProperty('user.home'), '.latency-cam/signing.properties')
+if (releaseSigningFile.isFile()) {
+    releaseSigningFile.withInputStream { releaseSigning.load(it) }
+}
+
 android {
     namespace 'ca.mlsoft.latencycam'
     compileSdk 37
@@ -12,6 +19,25 @@ android {
         targetSdk 36
         versionCode 1
         versionName '0.1'
+    }
+
+    signingConfigs {
+        release {
+            if (releaseSigning.storeFile) {
+                storeFile new File(releaseSigningFile.parentFile, releaseSigning.storeFile)
+                storePassword releaseSigning.password
+                keyAlias releaseSigning.keyAlias
+                keyPassword releaseSigning.password
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            if (releaseSigning.storeFile) {
+                signingConfig signingConfigs.release
+            }
+        }
     }
 
     compileOptions {
