@@ -27,6 +27,7 @@ namespace latency_test {
     int height = 0;  ///< Pattern height in pixels.
     double fps = 0;  ///< Frame rate passed as --stream-fps; 0 to leave it out.
     std::function<void()> flush_logs;  ///< Called before the analyzer starts, so it reads complete logs.
+    std::function<void()> show_pattern;  ///< Called on the server's thread when Latency Cam asks for the test pattern.
   };
 
   /**

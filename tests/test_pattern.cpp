@@ -237,6 +237,93 @@ TEST(LatencyTestPatternTest, ParseOptionsReadsAutoAndTimeServer) {
   EXPECT_EQ(parse({"--time-port", "0"}, error)->time_port, 0);
 }
 
+TEST(LatencyTestPatternTest, ParseOptionsReadsQr) {
+  std::string error;
+  EXPECT_TRUE(parse({}, error)->qr);
+  EXPECT_FALSE(parse({"--no-qr"}, error)->qr);
+}
+
+TEST(LatencyTestPatternTest, QrHostsPreferGatewaysAndKeepPrivateAddresses) {
+  const auto hosts = latency_test::qr_hosts({
+    {{172, 24, 0, 1}, false},  // A virtual adapter
+    {{8, 8, 8, 8}, true},  // Public
+    {{192, 168, 1, 20}, true},
+    {{169, 254, 3, 4}, false},  // Link local
+    {{100, 64, 0, 1}, true},  // Carrier grade NAT, as VPNs use
+    {{172, 32, 0, 1}, true},  // Just past the private range
+    {{10, 0, 0, 5}, true},
+  });
+  EXPECT_EQ(hosts, (std::vector<std::string> {"192.168.1.20", "10.0.0.5", "172.24.0.1"}));
+}
+
+TEST(LatencyTestPatternTest, QrHostsAreLimited) {
+  const auto hosts = latency_test::qr_hosts({
+    {{10, 0, 0, 1}, true},
+    {{10, 0, 0, 2}, true},
+    {{10, 0, 0, 3}, true},
+    {{10, 0, 0, 4}, true},
+  });
+  EXPECT_EQ(hosts.size(), latency_test::qr_max_hosts);
+  EXPECT_EQ(hosts.back(), "10.0.0.3");
+}
+
+TEST(LatencyTestPatternTest, QrUrlHoldsTheConnectionDetailsInTheFragment) {
+  EXPECT_EQ(latency_test::qr_url({"192.168.1.20", "10.0.0.5"}, 48100, 3840, 2160), "https://moreorlesssoftware.github.io/c#h=192.168.1.20,10.0.0.5&p=48100&s=3840x2160");
+  EXPECT_EQ(latency_test::qr_url({}, 50000, 1920, 1080), "https://moreorlesssoftware.github.io/c#h=&p=50000&s=1920x1080");
+}
+
+TEST(LatencyTestPatternTest, QrIsCenteredInWholePixelsAtHalfTheHeight) {
+  const auto [module_px, rect] = latency_test::place_qr(1920, 1080, 37);
+  EXPECT_EQ(module_px, 12);
+  EXPECT_EQ(rect, (rect_t {690, 270, 540, 540}));
+  // Rounds down rather than growing past half
+  EXPECT_EQ(latency_test::place_qr(1920, 1200, 37).module_px, 13);
+  // Never vanishes in a tiny window
+  EXPECT_EQ(latency_test::place_qr(40, 30, 37).module_px, 1);
+}
+
+TEST(LatencyTestPatternTest, QrClearsTheFiducialsAndStatusBand) {
+  for (const auto &[width, height] : std::initializer_list<std::pair<int, int>> {{1280, 720}, {1920, 1080}, {2560, 1440}, {3840, 2160}, {3440, 1440}, {1920, 1200}, {1024, 768}}) {
+    const auto layout = latency_test::compute_layout(width, height);
+    const rect_t rect = latency_test::place_qr(width, height, 41).rect;
+    for (const rect_t &fiducial : layout.fiducials) {
+      EXPECT_FALSE(overlaps(rect, fiducial)) << width << "x" << height;
+    }
+    EXPECT_FALSE(overlaps(rect, layout.info)) << width << "x" << height;
+  }
+}
+
+TEST(LatencyTestPatternTest, QrScreenDrawsModulesQuietZoneAndFiducials) {
+  constexpr int width = 1920;
+  constexpr int height = 1080;
+  constexpr int size = 21;
+  const auto pixels = latency_test::qr_screen_pixels(width, height, size, [](int x, int y) {
+    return x == 0 && y == 0;
+  });
+  ASSERT_EQ(pixels.size(), static_cast<std::size_t>(width) * height);
+  const auto at = [&](int x, int y) {
+    return pixels[static_cast<std::size_t>(y) * width + x];
+  };
+  constexpr std::uint32_t black = 0xFF000000;
+  constexpr std::uint32_t white = 0xFFFFFFFF;
+  constexpr std::uint32_t gray = 0xFF808080;
+
+  const auto [module_px, rect] = latency_test::place_qr(width, height, size);
+  const int first = latency_test::qr_quiet_modules * module_px;
+  EXPECT_EQ(at(rect.x - 1, rect.y), gray);
+  EXPECT_EQ(at(rect.x, rect.y), white);  // Quiet zone
+  EXPECT_EQ(at(rect.x + first - 1, rect.y + first), white);
+  EXPECT_EQ(at(rect.x + first, rect.y + first), black);  // The dark module, all of it
+  EXPECT_EQ(at(rect.x + first + module_px - 1, rect.y + first + module_px - 1), black);
+  EXPECT_EQ(at(rect.x + first + module_px, rect.y + first), white);
+  EXPECT_EQ(at(rect.x + rect.w - 1, rect.y + rect.h - 1), white);
+
+  const rect_t fiducial = latency_test::compute_layout(width, height).fiducials[0];
+  EXPECT_EQ(at(fiducial.x + fiducial.w / 2, fiducial.y + fiducial.h / 2), white);
+  EXPECT_EQ(at(fiducial.x + fiducial.w / 2 + fiducial.w / 4 - 1, fiducial.y + fiducial.h / 2), black);
+  EXPECT_EQ(at(fiducial.x, fiducial.y), white);
+}
+
 TEST(LatencyTestPatternTest, ParseOptionsRejectsBadAutoAndTimeServer) {
   const std::string interval_error = "--auto-interval must be <min>-<max> in ms, between 20 and 10000";
   const std::string port_error = "--time-port must be a port number, 0 to 65535";

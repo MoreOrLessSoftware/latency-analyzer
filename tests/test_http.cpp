@@ -44,6 +44,8 @@ TEST(HttpTest, RoutesEveryEndpoint) {
     EXPECT_EQ(route.name, name) << method << " " << path;
   };
   check("GET", "/", route_e::index, "");
+  check("POST", "/pattern", route_e::show_pattern, "");
+  check("GET", "/pattern", route_e::not_found, "");
   check("PUT", "/recordings/amf-av1_20261101-081459.mp4", route_e::upload_video, "amf-av1_20261101-081459");
   check("PUT", "/recordings/run.camera.json", route_e::upload_timing, "run");
   check("POST", "/recordings/run/analyze", route_e::analyze, "run");

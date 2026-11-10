@@ -12,6 +12,9 @@
  *
  * A UDP time server answers Latency Cam's clock sync requests (see clock_sync.h) with QueryPerformanceCounter values,
  * so what the camera films can be timed on the same clock as the logs.
+ *
+ * The app starts on a QR code that opens Latency Cam and tells it where the host is. Latency Cam asks for the test
+ * pattern when it is ready to film, or any key, mouse button or gamepad button brings it up.
  */
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -20,6 +23,7 @@
 // local includes
 #include "clock_sync.h"
 #include "pattern.h"
+#include "third_party/qrcodegen/qrcodegen.hpp"
 #include "upload_server.h"
 
 // platform includes (winsock2.h must come before windows.h)
@@ -34,20 +38,26 @@
 #include <shlobj.h>
 #include <commctrl.h>
 #include <windows.h>
+#include <hidsdi.h>
+#include <iphlpapi.h>
 #include <tlhelp32.h>
 #include <wrl/client.h>
+#include <xinput.h>
 
 // standard includes
 #include <atomic>
 #include <cstdio>
+#include <cstring>
 #include <deque>
 #include <format>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <map>
 #include <optional>
 #include <random>
 #include <thread>
+#include <vector>
 
 using Microsoft::WRL::ComPtr;
 
@@ -230,6 +240,14 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
     bool toggle_vsync = false;  ///< Set when V was pressed.
     bool toggle_auto = false;  ///< Set when A was pressed.
     double other_noise = 0;  ///< Noise amplitude N switches to; swapped with options.noise on each press.
+    bool qr_mode = false;  ///< Showing the QR code instead of the test pattern.
+    std::atomic<bool> pattern_requested {false};  ///< Set when an input or Latency Cam asks to leave the QR code.
+    std::int64_t qr_input_from_qpc = 0;  ///< Inputs before this are the one that launched the app, not a request to start.
+    std::int64_t next_qr_qpc = 0;  ///< When the QR code is next presented.
+    ComPtr<ID3D11Texture2D> qr_texture;  ///< The QR screen, ready to copy to the back buffer.
+    decltype(&XInputGetState) xinput_get_state = nullptr;  ///< XInputGetState, loaded when the system has it.
+    bool xinput_held[XUSER_MAX_COUNT] {};  ///< Which XInput pads had something pressed at the last poll.
+    std::map<HANDLE, bool> hid_held;  ///< Which HID gamepads had a button down in their last report.
     latency_test::upload_server_t *upload_server = nullptr;  ///< Latency Cam's upload server, when running.
     std::filesystem::path results_dir;  ///< Where uploads and their results are saved.
     bool exit_requested = false;  ///< Set when the app was closed during an upload or analysis, to wait for it.
@@ -470,6 +488,83 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
   }
 
   /**
+   * @brief Leave the QR code for the test pattern, unless the input is the one that launched the app.
+   *
+   * @param app App state.
+   * @param qpc When the input arrived.
+   */
+  void request_pattern(app_t &app, std::int64_t qpc) {
+    if (qpc >= app.qr_input_from_qpc) {
+      app.pattern_requested = true;
+    }
+  }
+
+  /**
+   * @brief Leave the QR code when a HID gamepad's button goes down. This reaches pads XInput doesn't, like DualShocks.
+   *
+   * @param app App state.
+   * @param handle Raw input handle from WM_INPUT.
+   * @param qpc When the input arrived.
+   */
+  void handle_raw_gamepad(app_t &app, HRAWINPUT handle, std::int64_t qpc) {
+    constexpr USAGE button_page = 0x09;
+
+    UINT size = 0;
+    GetRawInputData(handle, RID_INPUT, nullptr, &size, sizeof(RAWINPUTHEADER));
+    std::vector<std::uint64_t> buffer(size / sizeof(std::uint64_t) + 1);
+    if (GetRawInputData(handle, RID_INPUT, buffer.data(), &size, sizeof(RAWINPUTHEADER)) == static_cast<UINT>(-1)) {
+      return;
+    }
+    auto &raw = *reinterpret_cast<RAWINPUT *>(buffer.data());
+
+    UINT preparsed_size = 0;
+    GetRawInputDeviceInfoW(raw.header.hDevice, RIDI_PREPARSEDDATA, nullptr, &preparsed_size);
+    std::vector<std::uint64_t> preparsed_buffer(preparsed_size / sizeof(std::uint64_t) + 1);
+    if (GetRawInputDeviceInfoW(raw.header.hDevice, RIDI_PREPARSEDDATA, preparsed_buffer.data(), &preparsed_size) == static_cast<UINT>(-1)) {
+      return;
+    }
+    const auto preparsed = reinterpret_cast<PHIDP_PREPARSED_DATA>(preparsed_buffer.data());
+
+    std::vector<USAGE> usages(HidP_MaxUsageListLength(HidP_Input, button_page, preparsed) + 1);
+    bool down = false;
+    for (DWORD i = 0; i < raw.data.hid.dwCount; ++i) {
+      ULONG count = static_cast<ULONG>(usages.size());
+      auto report = reinterpret_cast<PCHAR>(raw.data.hid.bRawData + i * raw.data.hid.dwSizeHid);
+      if (HidP_GetUsages(HidP_Input, button_page, 0, usages.data(), &count, preparsed, report, raw.data.hid.dwSizeHid) == HIDP_STATUS_SUCCESS && count > 0) {
+        down = true;
+      }
+    }
+
+    bool &held = app.hid_held[raw.header.hDevice];
+    if (down && !held) {
+      request_pattern(app, qpc);
+    }
+    held = down;
+  }
+
+  /**
+   * @brief Leave the QR code when an XInput pad's button or trigger goes down.
+   *
+   * @param app App state.
+   */
+  void poll_xinput(app_t &app) {
+    if (!app.xinput_get_state) {
+      return;
+    }
+    const std::int64_t qpc = qpc_now();
+    for (DWORD pad = 0; pad < XUSER_MAX_COUNT; ++pad) {
+      XINPUT_STATE state {};
+      const bool connected = app.xinput_get_state(pad, &state) == ERROR_SUCCESS;
+      const auto &gamepad = state.Gamepad;
+      const bool down = connected && (gamepad.wButtons != 0 || gamepad.bLeftTrigger > XINPUT_GAMEPAD_TRIGGER_THRESHOLD || gamepad.bRightTrigger > XINPUT_GAMEPAD_TRIGGER_THRESHOLD);
+      if (down && !app.xinput_held[pad]) {
+        request_pattern(app, qpc);
+      }
+      app.xinput_held[pad] = down;
+    }
+  }
+
+  /**
    * @brief Turn a raw input message into queued inputs.
    *
    * Only presses count: key releases, key auto repeat and mouse movement are ignored.
@@ -479,6 +574,16 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
    */
   void handle_raw_input(app_t &app, HRAWINPUT handle) {
     const std::int64_t qpc = qpc_now();
+
+    if (app.qr_mode) {
+      // Gamepad reports are longer than the RAWINPUT below. They are only registered for while the QR code shows.
+      RAWINPUTHEADER header {};
+      UINT header_size = sizeof(header);
+      if (GetRawInputData(handle, RID_HEADER, &header, &header_size, sizeof(RAWINPUTHEADER)) != static_cast<UINT>(-1) && header.dwType == RIM_TYPEHID) {
+        handle_raw_gamepad(app, handle, qpc);
+        return;
+      }
+    }
 
     RAWINPUT raw {};
     UINT size = sizeof(raw);
@@ -500,7 +605,11 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
       }
       app.keys_down[vkey] = true;
 
-      if (app.fps_entry.active) {
+      if (app.qr_mode && vkey != VK_ESCAPE) {
+        // Only brings up the pattern: it doesn't count as an input or toggle anything
+        request_pattern(app, qpc);
+      }
+      else if (app.fps_entry.active) {
         // While a frame rate is typed, keys edit it instead of flipping the trigger, and Esc cancels
         double fps = 0;
         if (app.fps_entry.key(vkey, fps) == latency_test::fps_entry_t::result_e::apply) {
@@ -541,7 +650,12 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
       };
       for (std::uint32_t button = 0; button < std::size(downs); ++button) {
         if (raw.data.mouse.usButtonFlags & downs[button]) {
-          queue_input(app, 'm', button + 1, qpc);
+          if (app.qr_mode) {
+            request_pattern(app, qpc);
+          }
+          else {
+            queue_input(app, 'm', button + 1, qpc);
+          }
         }
       }
     }
@@ -595,6 +709,66 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
   }
 
   /**
+   * @brief List the addresses Latency Cam could reach this host at.
+   *
+   * @return The addresses to put in the QR code.
+   */
+  std::vector<std::string> local_hosts() {
+    constexpr ULONG flags = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER | GAA_FLAG_INCLUDE_GATEWAYS;
+    ULONG size = 16 * 1024;
+    std::vector<std::uint64_t> buffer;
+    ULONG result;
+    do {
+      buffer.resize(size / sizeof(std::uint64_t) + 1);
+      result = GetAdaptersAddresses(AF_INET, flags, nullptr, reinterpret_cast<PIP_ADAPTER_ADDRESSES>(buffer.data()), &size);
+    } while (result == ERROR_BUFFER_OVERFLOW);
+    if (result != NO_ERROR) {
+      return {};
+    }
+
+    std::vector<latency_test::ipv4_candidate_t> candidates;
+    for (auto adapter = reinterpret_cast<PIP_ADAPTER_ADDRESSES>(buffer.data()); adapter; adapter = adapter->Next) {
+      if (adapter->OperStatus != IfOperStatusUp || adapter->IfType == IF_TYPE_SOFTWARE_LOOPBACK || adapter->IfType == IF_TYPE_TUNNEL) {
+        continue;
+      }
+      for (auto unicast = adapter->FirstUnicastAddress; unicast; unicast = unicast->Next) {
+        latency_test::ipv4_candidate_t candidate {{}, adapter->FirstGatewayAddress != nullptr};
+        const auto *address = reinterpret_cast<const sockaddr_in *>(unicast->Address.lpSockaddr);
+        std::memcpy(candidate.address.data(), &address->sin_addr, candidate.address.size());
+        candidates.push_back(candidate);
+      }
+    }
+    return latency_test::qr_hosts(std::move(candidates));
+  }
+
+  /**
+   * @brief Draw the QR screen for the current window size. Without it the app goes straight to the test pattern.
+   *
+   * @param app App state.
+   */
+  void build_qr_screen(app_t &app) {
+    const std::string url = latency_test::qr_url(local_hosts(), app.options.time_port, app.width, app.height);
+    const auto code = qrcodegen::QrCode::encodeText(url.c_str(), qrcodegen::QrCode::Ecc::MEDIUM);
+    const auto pixels = latency_test::qr_screen_pixels(app.width, app.height, code.getSize(), [&code](int x, int y) {
+      return code.getModule(x, y);
+    });
+
+    D3D11_TEXTURE2D_DESC desc {};
+    desc.Width = app.width;
+    desc.Height = app.height;
+    desc.MipLevels = 1;
+    desc.ArraySize = 1;
+    desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_DEFAULT;
+    const D3D11_SUBRESOURCE_DATA data {pixels.data(), static_cast<UINT>(app.width * sizeof(std::uint32_t)), 0};
+    app.qr_texture.Reset();
+    if (FAILED(app.device->CreateTexture2D(&desc, &data, &app.qr_texture))) {
+      app.qr_mode = false;
+    }
+  }
+
+  /**
    * @brief Create the render target view for the current back buffer and update the layout.
    *
    * @param app App state.
@@ -641,6 +815,9 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
           app.text_format->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
         }
       }
+    }
+    if (app.qr_mode) {
+      build_qr_screen(app);
     }
     return S_OK;
   }
@@ -793,6 +970,64 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
     if (app.text_target->EndDraw() == D2DERR_RECREATE_TARGET) {
       create_target(app);
     }
+  }
+
+  /**
+   * @brief Present the QR screen. These frames aren't logged, since the analyzer only needs the pattern's.
+   *
+   * @param app App state.
+   */
+  void render_qr(app_t &app) {
+    ComPtr<ID3D11Texture2D> back_buffer;
+    if (SUCCEEDED(app.swap_chain->GetBuffer(0, IID_PPV_ARGS(&back_buffer)))) {
+      app.context->CopyResource(back_buffer.Get(), app.qr_texture.Get());
+    }
+    app.status_text = L"Scan with your phone's camera to open Latency Cam, or press any key or button to start";
+    draw_status(app);
+    app.swap_chain->Present(1, 0);
+  }
+
+  /**
+   * @brief Start showing the QR code: load gamepad support and ignore whatever input launched the app.
+   *
+   * @param app App state.
+   */
+  void enter_qr_mode(app_t &app) {
+    app.qr_mode = true;
+    build_qr_screen(app);
+    if (!app.qr_mode) {
+      return;
+    }
+    app.qr_input_from_qpc = qpc_now() + app.qpc_frequency;
+
+    HMODULE xinput = LoadLibraryW(L"xinput1_4.dll");
+    if (!xinput) {
+      xinput = LoadLibraryW(L"xinput9_1_0.dll");
+    }
+    if (xinput) {
+      app.xinput_get_state = reinterpret_cast<decltype(&XInputGetState)>(reinterpret_cast<void *>(GetProcAddress(xinput, "XInputGetState")));
+    }
+    const RAWINPUTDEVICE gamepads[] = {
+      {0x01, 0x04, RIDEV_INPUTSINK, app.hwnd},  // joystick
+      {0x01, 0x05, RIDEV_INPUTSINK, app.hwnd},  // gamepad
+    };
+    RegisterRawInputDevices(gamepads, std::size(gamepads), sizeof(RAWINPUTDEVICE));
+  }
+
+  /**
+   * @brief Stop showing the QR code. Gamepad reports stop arriving, so they can't disturb the test pattern's timing.
+   *
+   * @param app App state.
+   */
+  void leave_qr_mode(app_t &app) {
+    app.qr_mode = false;
+    app.qr_texture.Reset();
+    app.status_text.clear();
+    const RAWINPUTDEVICE gamepads[] = {
+      {0x01, 0x04, RIDEV_REMOVE, nullptr},
+      {0x01, 0x05, RIDEV_REMOVE, nullptr},
+    };
+    RegisterRawInputDevices(gamepads, std::size(gamepads), sizeof(RAWINPUTDEVICE));
   }
 
   /**
@@ -1420,12 +1655,20 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
           std::fflush(app.frames_log);
         }
       };
+      config.show_pattern = [&app]() {
+        app.pattern_requested = true;
+      };
       app.results_dir = config.results_dir;
       const std::string upload_error = upload_server.start(app.options.time_port, std::move(config));
       app.status.latency_cam_port = upload_error.empty() ? app.options.time_port : 0;
       if (upload_error.empty()) {
         app.upload_server = &upload_server;
       }
+    }
+
+    // The QR code is no use unless Latency Cam can reach the app
+    if (app.options.qr && app.upload_server) {
+      enter_qr_mode(app);
     }
 
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
@@ -1463,6 +1706,28 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
           upload_server.stop();
           stop_time_server(time_server);
           return fail("Resizing the swap chain", hr);
+        }
+      }
+
+      if (app.qr_mode) {
+        if (!app.pattern_requested) {
+          const std::int64_t now = qpc_now();
+          if (now >= app.next_qr_qpc) {
+            poll_xinput(app);
+            render_qr(app);
+            app.next_qr_qpc = now + app.qpc_frequency / 30;
+          }
+          LARGE_INTEGER due;
+          due.QuadPart = -std::max<std::int64_t>(1, (app.next_qr_qpc - qpc_now()) * 10'000'000 / app.qpc_frequency);
+          SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE);
+          MsgWaitForMultipleObjectsEx(1, &timer, INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+          continue;
+        }
+        // The frame count and automatic flips start with the pattern
+        leave_qr_mode(app);
+        next_frame = qpc_now();
+        if (app.options.auto_flip) {
+          schedule_auto_flip(app, next_frame);
         }
       }
 

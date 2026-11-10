@@ -299,6 +299,13 @@ namespace latency_test {
         respond(client, "200 OK", "text/plain", "latency-test: Latency Cam uploads go to /recordings/\n");
         return;
 
+      case route_e::show_pattern:
+        if (config_.show_pattern) {
+          config_.show_pattern();
+        }
+        respond(client, "200 OK", "application/json", "{\"state\":\"pattern\"}");
+        return;
+
       case route_e::upload_video:
       case route_e::upload_timing:
         {

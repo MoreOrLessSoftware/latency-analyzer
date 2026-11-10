@@ -17,6 +17,9 @@
  *
  * Patches sit on a block grid (64 px when the screen is big enough, otherwise 16 px) so encoder blocks do not
  * straddle patch edges, and a mid-gray quiet zone around them keeps noise from bleeding into them.
+ *
+ * Before the pattern the app shows a QR code for Latency Cam, on flat gray with the same four fiducials. See qr_url
+ * for what it holds and place_qr for where it goes; Latency Cam relies on both.
  */
 #pragma once
 
@@ -26,6 +29,8 @@
 #include <charconv>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -220,6 +225,7 @@ namespace latency_test {
     double noise = 0.5;  ///< Background noise amplitude, 0 (flat gray) to 1 (full range).
     double fps = 0;  ///< Background update rate; 0 matches the display refresh rate.
     std::string log_path;  ///< CSV log path; empty picks a file in the temp directory.
+    bool qr = true;  ///< Start on the QR code for Latency Cam instead of the test pattern.
     bool auto_flip = true;  ///< Flip the trigger on its own at random intervals.
     double auto_min_ms = 150;  ///< Shortest interval between automatic flips.
     double auto_max_ms = 400;  ///< Longest interval between automatic flips.
@@ -244,6 +250,7 @@ namespace latency_test {
     "  --log <path>     CSV log of inputs and the frames that answered them\n"
     "                   (default: %TEMP%\\latency_test.csv). Every frame's\n"
     "                   present time goes to the same name ending .frames.csv.\n"
+    "  --no-qr          Start on the test pattern instead of the QR code for Latency Cam.\n"
     "  --no-auto        Start without automatic flips. By default the trigger flips on\n"
     "                   its own every 150 to 400 ms, at random, on the next scheduled\n"
     "                   frame (key presses still get an extra frame). A toggles it.\n"
@@ -318,6 +325,9 @@ namespace latency_test {
       else if (arg == "--no-auto") {
         options.auto_flip = false;
       }
+      else if (arg == "--no-qr") {
+        options.qr = false;
+      }
       else if (arg == "--no-time-server") {
         options.time_port = 0;
       }
@@ -381,6 +391,135 @@ namespace latency_test {
       }
     }
     return options;
+  }
+
+  constexpr int qr_quiet_modules = 4;  ///< Blank modules around a QR code, as the standard requires.
+  constexpr int qr_max_hosts = 3;  ///< Most addresses listed in the QR code, to keep its modules large.
+  constexpr std::string_view qr_link = "https://moreorlesssoftware.github.io/c";  ///< Opens Latency Cam, or its download page.
+
+  /**
+   * @brief An IPv4 address of one of the host's network adapters.
+   */
+  struct ipv4_candidate_t {
+    std::array<std::uint8_t, 4> address;  ///< The address, most significant byte first.
+    bool has_gateway;  ///< Whether its adapter has a default gateway, which virtual adapters usually don't.
+  };
+
+  /**
+   * @brief Check whether an address is in one of the private IPv4 ranges.
+   *
+   * @param address The address.
+   * @return True for 10.0.0.0/8, 172.16.0.0/12 and 192.168.0.0/16.
+   */
+  constexpr bool is_private_ipv4(const std::array<std::uint8_t, 4> &address) {
+    return address[0] == 10 ||
+           (address[0] == 172 && address[1] >= 16 && address[1] <= 31) ||
+           (address[0] == 192 && address[1] == 168);
+  }
+
+  /**
+   * @brief Choose the addresses to list in the QR code.
+   *
+   * @param candidates The host's addresses.
+   * @return Up to qr_max_hosts private addresses as text, those on adapters with a gateway first.
+   */
+  inline std::vector<std::string> qr_hosts(std::vector<ipv4_candidate_t> candidates) {
+    std::stable_partition(candidates.begin(), candidates.end(), [](const ipv4_candidate_t &candidate) {
+      return candidate.has_gateway;
+    });
+    std::vector<std::string> hosts;
+    for (const auto &candidate : candidates) {
+      if (is_private_ipv4(candidate.address) && hosts.size() < qr_max_hosts) {
+        const auto &a = candidate.address;
+        hosts.push_back(std::to_string(a[0]) + '.' + std::to_string(a[1]) + '.' + std::to_string(a[2]) + '.' + std::to_string(a[3]));
+      }
+    }
+    return hosts;
+  }
+
+  /**
+   * @brief Build the link shown in the QR code.
+   *
+   * The details are in the fragment, which browsers don't send, so LAN addresses stay out of the web server's logs.
+   * With no addresses, Latency Cam finds the host by broadcast as usual.
+   *
+   * @param hosts Addresses Latency Cam can try.
+   * @param port Port of the clock sync and upload servers.
+   * @param width Screen width in pixels.
+   * @param height Screen height in pixels.
+   * @return The link, like https://example/c#h=10.0.0.5,192.168.1.2&p=48100&s=1920x1080.
+   */
+  inline std::string qr_url(const std::vector<std::string> &hosts, int port, int width, int height) {
+    std::string url = std::string(qr_link) + "#h=";
+    for (std::size_t i = 0; i < hosts.size(); ++i) {
+      url += (i ? "," : "") + hosts[i];
+    }
+    return url + "&p=" + std::to_string(port) + "&s=" + std::to_string(width) + 'x' + std::to_string(height);
+  }
+
+  /**
+   * @brief Where a QR code goes on the screen.
+   */
+  struct qr_placement_t {
+    int module_px;  ///< Side of one module in pixels.
+    rect_t rect;  ///< The code including its quiet zone.
+  };
+
+  /**
+   * @brief Work out where a QR code goes: centered, in whole pixels per module, about half of the screen's short side.
+   *
+   * Latency Cam repeats this calculation to work out from the code it sees where the corners of the screen are, so
+   * changing it means changing Latency Cam too.
+   *
+   * @param width Screen width in pixels.
+   * @param height Screen height in pixels.
+   * @param size Modules along one side of the code, without the quiet zone.
+   * @return The placement.
+   */
+  constexpr qr_placement_t place_qr(int width, int height, int size) {
+    const int total = size + 2 * qr_quiet_modules;
+    const int module_px = std::max(std::min(width, height) / 2 / total, 1);
+    const int side = total * module_px;
+    return {module_px, {(width - side) / 2, (height - side) / 2, side, side}};
+  }
+
+  /**
+   * @brief Draw the QR screen: flat gray, the pattern's fiducials and the code.
+   *
+   * @param width Screen width in pixels.
+   * @param height Screen height in pixels.
+   * @param size Modules along one side of the code.
+   * @param dark Whether the module at a column and row is dark.
+   * @return Pixels as 0xAARRGGBB, row by row.
+   */
+  inline std::vector<std::uint32_t> qr_screen_pixels(int width, int height, int size, const std::function<bool(int, int)> &dark) {
+    constexpr std::uint32_t gray = 0xFF808080;
+    constexpr std::uint32_t black = 0xFF000000;
+    constexpr std::uint32_t white = 0xFFFFFFFF;
+    std::vector<std::uint32_t> pixels(static_cast<std::size_t>(width) * height, gray);
+    const auto at = [&](int x, int y) -> std::uint32_t & {
+      return pixels[static_cast<std::size_t>(y) * width + x];
+    };
+
+    // The same square bullseyes as the pixel shader: white center, black ring, white outer ring
+    for (const rect_t &r : compute_layout(width, height).fiducials) {
+      for (int y = std::max(r.y, 0); y < std::min(r.y + r.h, height); ++y) {
+        for (int x = std::max(r.x, 0); x < std::min(r.x + r.w, width); ++x) {
+          const int ring = std::max(std::abs(x - r.x - r.w / 2), std::abs(y - r.y - r.h / 2)) * 8 / r.w;
+          at(x, y) = ring == 0 || ring >= 3 ? white : black;
+        }
+      }
+    }
+
+    const auto [module_px, rect] = place_qr(width, height, size);
+    for (int y = std::max(rect.y, 0); y < std::min(rect.y + rect.h, height); ++y) {
+      for (int x = std::max(rect.x, 0); x < std::min(rect.x + rect.w, width); ++x) {
+        const int column = (x - rect.x) / module_px - qr_quiet_modules;
+        const int row = (y - rect.y) / module_px - qr_quiet_modules;
+        at(x, y) = column >= 0 && row >= 0 && column < size && row < size && dark(column, row) ? black : white;
+      }
+    }
+    return pixels;
   }
 
   /**

@@ -44,6 +44,7 @@ namespace latency_test {
     status,  ///< GET NAME/status
     report,  ///< GET NAME/report
     index,  ///< GET /
+    show_pattern,  ///< POST /pattern
     not_found,  ///< Anything else
   };
 
@@ -52,7 +53,7 @@ namespace latency_test {
    */
   struct route_t {
     route_e kind;  ///< What is asked for.
-    std::string name;  ///< Recording name, without extension; empty for index and not_found.
+    std::string name;  ///< Recording name, without extension; empty for routes without one.
   };
 
   /**
@@ -158,6 +159,9 @@ namespace latency_test {
     constexpr std::string_view prefix = "/recordings/";
     if (method == "GET" && path == "/") {
       return {route_e::index, {}};
+    }
+    if (method == "POST" && path == "/pattern") {
+      return {route_e::show_pattern, {}};
     }
     if (path.rfind(prefix, 0) != 0) {
       return {route_e::not_found, {}};

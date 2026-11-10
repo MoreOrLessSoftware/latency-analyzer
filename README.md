@@ -96,12 +96,18 @@ pass `--results`.
 | `--no-auto` | Starts without automatic flips. By default the trigger flips on its own every 150–400 ms, at random, as well as on key presses; automatic flips land on the next scheduled frame, so the frame rate stays steady. **A** toggles them while running. |
 | `--auto-interval <min>-<max>` | The interval range for automatic flips in ms, for example `100-300`. |
 | `--time-port <n>` | Port answering Latency Cam, default 48100: clock sync over UDP and uploads over TCP. |
-| `--no-time-server` | Doesn't answer clock sync requests or accept uploads. |
+| `--no-time-server` | Doesn't answer clock sync requests or accept uploads, and starts on the test pattern, since the phone couldn't reach the app. |
+| `--no-qr` | Starts on the test pattern instead of the QR code. |
 | `--results <dir>` | Where Latency Cam uploads and their analysis go. The default is a `results` folder next to `latency-test.exe`, or `Latency Cam` in Documents when that can't be written. |
 | `--analyzer <path>`, `--python <path>` | The `latency-analyzer.exe` or `analyze_video.py`, and the Python, to run on uploads, if not found next to the app. |
 | `--windowed` | Runs in a 1280x720 window instead of fullscreen. |
 
-The screen shows:
+The app starts on a QR code for Latency Cam. Any key, mouse button or gamepad button brings up the test pattern (Esc
+quits), and a press only does that: it doesn't count as an input. Nothing is logged until the pattern shows. The QR
+code is generated with [Project Nayuki's library](https://www.nayuki.io/page/qr-code-generator-library) (MIT License),
+in `app/third_party/qrcodegen`.
+
+The test pattern shows:
 
 - noise
 - the trigger square in the middle, with a row of bits above it (the Gray-coded frame number) and below it (the
@@ -332,6 +338,7 @@ are several of either, the ones that match the most frames are used.
 | `POST /recordings/NAME/analyze` | Runs the analyzer on them with the app's own log, resolution and frame rate |
 | `GET /recordings/NAME/status` | `analyzing`, `done` with the summary, or `failed` with the analyzer's last lines |
 | `GET /recordings/NAME/report` | The HTML report |
+| `POST /pattern` | Leaves the QR code for the test pattern; does nothing once the pattern is showing |
 
 Names may only use letters, digits, `.`, `_` and `-`. The server only runs while the test app does, and
 `--no-time-server` turns it off. Anyone on the network can upload to it while it runs.
