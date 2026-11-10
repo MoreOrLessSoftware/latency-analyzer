@@ -26,8 +26,10 @@ timestamps from the `REALTIME` source. Check with `adb shell dumpsys media.camer
 2. Open Latency Cam on the phone, on the same network as the host. It finds the time server by broadcast, or type
    the host's IP. The sync line turns green once the fastest round trip is under 5 ms and the offset stays within
    0.75 ms over 10 s.
-3. On the **Recording** tab, enter a test name and press **Record**. The button turns red and counts the seconds;
-   press it again to stop. Each recording is saved to `Download/LatencyCam` as `NAME_DATE-TIME.mp4` with
+3. On the **Recording** tab, enter a test name and point the phone at the QR code `latency-test` starts on. Once the
+   whole screen is steady in view the app brings up the test pattern, counts down from 3 (tap to cancel) and records
+   for 20 s. Or press **Record** at any time: the button turns red and shows the time left; press it again to stop
+   early. Each recording is saved to `Download/LatencyCam` as `NAME_DATE-TIME.mp4` with
    `NAME_DATE-TIME.camera.json` next to it.
 4. Choose **Upload & analyze** to send both files to `latency-test.exe` on port 48100, which runs the analyzer. The
    app switches to the **Results** tab and shows the headline numbers when it's done. It also downloads the report to

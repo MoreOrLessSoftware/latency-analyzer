@@ -56,6 +56,7 @@ final class ClockSync {
 
     private final List<Sample> samples = new ArrayList<>();
     private volatile InetAddress host;
+    private volatile int port = PORT;
     private volatile long qpcFrequency;
     private volatile boolean running;
     private Thread thread;
@@ -76,6 +77,15 @@ final class ClockSync {
 
     InetAddress getHost() {
         return host;
+    }
+
+    /** @param port The port the host answers on. */
+    void setPort(int port) {
+        this.port = port;
+    }
+
+    int getPort() {
+        return port;
     }
 
     long getQpcFrequency() {
@@ -219,7 +229,7 @@ final class ClockSync {
                     request.putInt(REQUEST_MAGIC).putInt(++sequence);
                     long t1 = SystemClock.elapsedRealtimeNanos();
                     request.putLong(t1);
-                    DatagramPacket packet = new DatagramPacket(request.array(), 16, target != null ? target : broadcast, PORT);
+                    DatagramPacket packet = new DatagramPacket(request.array(), 16, target != null ? target : broadcast, port);
                     socket.send(packet);
                     nextSend = t1 + (target != null ? INTERVAL_NS : BROADCAST_INTERVAL_NS);
                 }

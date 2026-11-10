@@ -116,7 +116,8 @@ The test pattern shows:
 - a readout band at the bottom with the host clock and the time since the last flip
 - a status band at the top: the frame rate the app aims for and where it came from, the display's refresh rate,
   v-sync or tearing, the frame rate actually presented over the last second and how long `Present` held the app on
-  average, the automatic flips and the Latency Cam port
+  average, the automatic flips and the Latency Cam port. While a recording is uploading or being analysed, the second
+  line shows its progress instead
 
 By default the app presents without v-sync, with tearing. It redraws the background on a timer at `--fps`, or without it at
 RTSS's limit or the display's refresh rate. A key press is answered straight away with an extra frame; automatic flips are
@@ -134,9 +135,10 @@ Keys, on the host or through the stream; none of them counts as a flip, and each
 
 ## Measure
 
-1. **Host:** stream `latency-test.exe`. The trigger flips on its own, and the app answers Latency Cam on port 48100.
-2. **Phone:** open Latency Cam on the same network. Wait for the sync line to turn green, frame the whole client
-   display (all four bullseyes, the trigger and the frame number row), enter a test name and record for 10–30 s.
+1. **Host:** stream `latency-test.exe`. It starts on a QR code and answers Latency Cam on port 48100.
+2. **Phone:** open Latency Cam on the same network, enter a test name and point it at the client display so all four
+   bullseyes are in view. When the screen is steady the host switches to the test pattern, the phone counts down
+   from 3 and records for 20 s. **Record** also works by hand, once the sync line is green.
 3. **Results:** after **Stop**, choose **Upload & analyze**. The host analyses the recording and the phone shows the
    headline numbers, and keeps a copy of the report, which **Open report** shows without the host.
 

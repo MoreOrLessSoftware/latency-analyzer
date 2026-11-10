@@ -11,6 +11,9 @@ import android.graphics.Matrix;
 import android.graphics.RectF;
 import android.graphics.SurfaceTexture;
 import android.graphics.Typeface;
+import android.net.ConnectivityManager;
+import android.net.LinkAddress;
+import android.net.LinkProperties;
 import android.net.Uri;
 import android.net.wifi.WifiManager;
 import android.os.Bundle;
@@ -36,15 +39,24 @@ import android.widget.TextView;
 
 import org.json.JSONObject;
 
+import java.io.IOException;
+import java.net.HttpURLConnection;
+import java.net.Inet4Address;
 import java.net.InetAddress;
+import java.net.URL;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.Date;
+import java.util.List;
 import java.util.Locale;
 
 /**
  * Films the client display at 240 fps while keeping the phone's clock synced with the host, so the analyzer can
  * time what the camera saw on the host's clock. After each recording the user uploads it to the host for analysis
  * or discards it; the results show on a second tab.
+ *
+ * While latency-test shows its QR code the app starts by itself: once the whole screen is steady in view it asks the
+ * host for the test pattern, counts down and records.
  */
 public class MainActivity extends Activity implements Recorder.Listener {
     private static final int CAMERA_REQUEST = 1;
@@ -54,11 +66,34 @@ public class MainActivity extends Activity implements Recorder.Listener {
     private static final int MUTED = 0xFF8A8984;
     private static final int BLUE = 0xFF2A78D6;
     private static final int PANE_DP = 320;
+    /** Recordings stop by themselves after this long. */
+    private static final int AUTO_STOP_S = 20;
+    private static final long SCAN_INTERVAL_MS = 250;
+    /** The screen has to stay in place this long before the countdown starts. */
+    private static final long STEADY_MS = 1000;
+    /** How far the screen may wander while holding still, as a fraction of the frame's long side. */
+    private static final double STEADY_TOLERANCE = 0.03;
+    /** Frames in a row without the code before the framing advice goes away. */
+    private static final int SCAN_MISSES_TO_CLEAR = 4;
+    private static final int MIN_SYNC_SAMPLES = 10;
+    private static final double MAX_SYNC_ROUND_TRIP_MS = 5;
+    private static final int COUNTDOWN_S = 3;
+    private static final int HTTP_TIMEOUT_MS = 2000;
+
+    /** Where the automatic start has got to. */
+    private enum AutoStart { SCANNING, ASKING_HOST, COUNTDOWN }
 
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final ClockSync clockSync = new ClockSync();
     private Recorder recorder;
     private Uploader uploader;
+    private QrScanner scanner;
+    private AutoStart autoStart = AutoStart.SCANNING;
+    private int countdown;
+    private int scanMisses;
+    private long steadySinceMs;  // 0 when the screen hasn't settled yet
+    private double steadyX;
+    private double steadyY;
     private WifiManager.WifiLock wifiLock;
     private SharedPreferences prefs;
     private boolean cameraOpen;
@@ -68,6 +103,8 @@ public class MainActivity extends Activity implements Recorder.Listener {
     private TextureView preview;
     private View cameraPlaceholder;
     private TextView placeholderText;
+    private TextView scanText;
+    private TextView countdownText;
     private TextView recordingTab;
     private TextView resultsTab;
     private View recordingPage;
@@ -104,6 +141,7 @@ public class MainActivity extends Activity implements Recorder.Listener {
         prefs = getSharedPreferences("latency-cam", MODE_PRIVATE);
         recorder = new Recorder(this, clockSync, this);
         uploader = new Uploader(getContentResolver(), uploadListener);
+        scanner = new QrScanner(this::onScan);
         buildViews();
         WifiManager wifi = getSystemService(WifiManager.class);
         wifiLock = wifi.createWifiLock(WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "latency-cam");
@@ -152,6 +190,31 @@ public class MainActivity extends Activity implements Recorder.Listener {
         FrameLayout.LayoutParams placeholderParams = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
         placeholderParams.rightMargin = dp(PANE_DP);
         root.addView(cameraPlaceholder, placeholderParams);
+
+        // The countdown covers the preview; tapping it cancels. The advice sits on top of everything over the preview.
+        countdownText = new TextView(this);
+        countdownText.setTextColor(Color.WHITE);
+        countdownText.setTextSize(160);
+        countdownText.setTypeface(Typeface.DEFAULT_BOLD);
+        countdownText.setGravity(Gravity.CENTER);
+        countdownText.setBackgroundColor(0x99000000);
+        countdownText.setVisibility(View.GONE);
+        countdownText.setOnClickListener(v -> cancelAutoStart());
+        FrameLayout.LayoutParams countdownParams = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+        countdownParams.rightMargin = dp(PANE_DP);
+        root.addView(countdownText, countdownParams);
+
+        scanText = new TextView(this);
+        scanText.setTextColor(Color.WHITE);
+        scanText.setTextSize(18);
+        scanText.setGravity(Gravity.CENTER);
+        scanText.setBackgroundColor(0xCC000000);
+        scanText.setPadding(dp(16), dp(8), dp(16), dp(8));
+        scanText.setVisibility(View.GONE);
+        FrameLayout.LayoutParams scanParams = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+        scanParams.rightMargin = dp(PANE_DP);
+        scanParams.bottomMargin = dp(24);
+        root.addView(scanText, scanParams);
 
         // Right-hand pane: a tab bar over two pages
         LinearLayout pane = new LinearLayout(this);
@@ -234,7 +297,14 @@ public class MainActivity extends Activity implements Recorder.Listener {
         recordButton.setText("Record");
         recordButton.setTextSize(18);
         recordButton.setEnabled(false);
-        recordButton.setOnClickListener(v -> toggleRecording());
+        recordButton.setOnClickListener(v -> {
+            cancelAutoStart();
+            if (!recorder.isRecording()) {
+                // In case the QR code is still up: filming that would be a wasted run
+                askHostForPattern(null);
+            }
+            toggleRecording();
+        });
         recordTint = recordButton.getBackgroundTintList();
         LinearLayout.LayoutParams recordParams = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(64));
         recordParams.topMargin = dp(12);
@@ -448,7 +518,7 @@ public class MainActivity extends Activity implements Recorder.Listener {
         prefs.edit().putString("name", nameField.getText().toString().trim()).apply();
         String stamp = new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(new Date());
         recorder.startRecording((test.isEmpty() ? "latency" : test) + "_" + stamp);
-        recordButton.setText("Stop · 0 s");
+        recordButton.setText(String.format(Locale.US, "Stop · %d s left", AUTO_STOP_S));
         setRecordColor(true);
     }
 
@@ -514,7 +584,7 @@ public class MainActivity extends Activity implements Recorder.Listener {
             return;
         }
         resultText.setText("Uploading…");
-        uploader.start(host, ClockSync.PORT, name, video, timing);
+        uploader.start(host, clockSync.getPort(), name, video, timing);
     }
 
     // -----------------------------------------------------------------------------------------------------------------
@@ -528,6 +598,7 @@ public class MainActivity extends Activity implements Recorder.Listener {
         wifiLock.acquire();
         clockSync.start();
         ui.post(statusTick);
+        ui.post(scanTick);
         if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[] {Manifest.permission.CAMERA}, CAMERA_REQUEST);
         } else {
@@ -539,6 +610,7 @@ public class MainActivity extends Activity implements Recorder.Listener {
     protected void onPause() {
         resumed = false;
         ui.removeCallbacks(statusTick);
+        ui.removeCallbacks(scanTick);
         closeCamera();
         clockSync.stop();
         if (wifiLock.isHeld()) {
@@ -550,6 +622,7 @@ public class MainActivity extends Activity implements Recorder.Listener {
     @Override
     protected void onDestroy() {
         recorder.release();
+        scanner.release();
         super.onDestroy();
     }
 
@@ -563,6 +636,7 @@ public class MainActivity extends Activity implements Recorder.Listener {
     }
 
     private void closeCamera() {
+        cancelAutoStart();
         if (cameraOpen) {
             recorder.close();
             cameraOpen = false;
@@ -610,12 +684,203 @@ public class MainActivity extends Activity implements Recorder.Listener {
             if (recorder.isRecording()) {
                 double seconds = (SystemClock.elapsedRealtimeNanos() - recorder.recordingStartRealtimeNs()) / 1e9;
                 int frames = recorder.framesRecorded();
-                recordButton.setText(String.format(Locale.US, "Stop · %d s", (int) seconds));
                 recordText.setText(String.format(Locale.US, "Recording: %d frames", frames));
+                // The button is disabled once stopping, while the recording is saved
+                if (recordButton.isEnabled()) {
+                    if (seconds >= AUTO_STOP_S) {
+                        toggleRecording();
+                    } else {
+                        recordButton.setText(String.format(Locale.US, "Stop · %d s left", (int) Math.ceil(AUTO_STOP_S - seconds)));
+                    }
+                }
             }
             ui.postDelayed(this, 250);
         }
     };
+
+    // -----------------------------------------------------------------------------------------------------------------
+    // Starting by itself from latency-test's QR code
+
+    private final Runnable scanTick = new Runnable() {
+        @Override
+        public void run() {
+            if (canScan()) {
+                scanner.scan(preview);
+            } else if (autoStart == AutoStart.SCANNING) {
+                showScanText(null);
+                steadySinceMs = 0;
+            }
+            ui.postDelayed(this, SCAN_INTERVAL_MS);
+        }
+    };
+
+    private final Runnable countdownTick = new Runnable() {
+        @Override
+        public void run() {
+            if (autoStart != AutoStart.COUNTDOWN) {
+                return;
+            }
+            if (countdown > 0) {
+                countdownText.setText(String.valueOf(countdown--));
+                ui.postDelayed(this, 1000);
+                return;
+            }
+            boolean ready = recordButton.isEnabled() && !recorder.isRecording();
+            cancelAutoStart();
+            if (ready) {
+                toggleRecording();
+            }
+        }
+    };
+
+    private boolean canScan() {
+        // A finished recording waits for Upload or Discard first; recording again would quietly set it aside
+        return autoStart == AutoStart.SCANNING && cameraOpen && onRecordingTab && preview.isAvailable()
+            && recordButton.isEnabled() && !recorder.isRecording() && pendingName == null;
+    }
+
+    private void onScan(QrScanner.Scan scan) {
+        if (!canScan()) {
+            return;
+        }
+        SessionLink link = scan == null ? null : SessionLink.parse(scan.text);
+        if (link == null) {
+            if (++scanMisses >= SCAN_MISSES_TO_CLEAR) {
+                steadySinceMs = 0;
+                showScanText(null);
+            }
+            return;
+        }
+        scanMisses = 0;
+        useHostFrom(link);
+
+        Framing.Result framing = Framing.check(scan.finders, scan.modules, link.width, link.height, scan.frameWidth, scan.frameHeight);
+        if (framing.advice != null) {
+            steadySinceMs = 0;
+            showScanText(framing.advice);
+            return;
+        }
+        ClockSync.Status sync = clockSync.status();
+        if (sync.samples < MIN_SYNC_SAMPLES) {
+            steadySinceMs = 0;
+            showScanText("Waiting for clock sync…");
+            return;
+        }
+        if (sync.minRttMs >= MAX_SYNC_ROUND_TRIP_MS) {
+            steadySinceMs = 0;
+            showScanText("Clock sync is too slow to start by itself. Check the network, or press Record.");
+            return;
+        }
+
+        long now = SystemClock.elapsedRealtime();
+        double tolerance = STEADY_TOLERANCE * Math.max(scan.frameWidth, scan.frameHeight);
+        if (steadySinceMs == 0 || Math.hypot(framing.centerX - steadyX, framing.centerY - steadyY) > tolerance) {
+            steadySinceMs = now;
+            steadyX = framing.centerX;
+            steadyY = framing.centerY;
+        }
+        if (now - steadySinceMs < STEADY_MS) {
+            showScanText("Hold still…");
+            return;
+        }
+
+        autoStart = AutoStart.ASKING_HOST;
+        showScanText("Starting…");
+        askHostForPattern(this::onHostAnswered);
+    }
+
+    private void onHostAnswered(boolean showing) {
+        if (autoStart != AutoStart.ASKING_HOST) {
+            return;  // Cancelled since
+        }
+        if (!showing) {
+            autoStart = AutoStart.SCANNING;
+            steadySinceMs = 0;
+            showScanText("Couldn't reach the host. Check that the firewall allows latency-test.");
+            return;
+        }
+        autoStart = AutoStart.COUNTDOWN;
+        countdown = COUNTDOWN_S;
+        countdownText.setVisibility(View.VISIBLE);
+        showScanText("Tap to cancel");
+        countdownTick.run();
+    }
+
+    private void cancelAutoStart() {
+        ui.removeCallbacks(countdownTick);
+        autoStart = AutoStart.SCANNING;
+        steadySinceMs = 0;
+        countdownText.setVisibility(View.GONE);
+        showScanText(null);
+    }
+
+    private void showScanText(String text) {
+        scanText.setText(text);
+        scanText.setVisibility(text == null ? View.GONE : View.VISIBLE);
+    }
+
+    /** Point the clock sync at the address in a link, unless it is already talking to one of the link's addresses. */
+    private void useHostFrom(SessionLink link) {
+        clockSync.setPort(link.port);
+        InetAddress current = clockSync.getHost();
+        if (current != null && link.hosts.contains(current.getHostAddress())) {
+            return;
+        }
+        List<String> addresses = new ArrayList<>();
+        List<Integer> prefixes = new ArrayList<>();
+        ConnectivityManager connectivity = getSystemService(ConnectivityManager.class);
+        LinkProperties network = connectivity.getLinkProperties(connectivity.getActiveNetwork());
+        if (network != null) {
+            for (LinkAddress address : network.getLinkAddresses()) {
+                if (address.getAddress() instanceof Inet4Address) {
+                    addresses.add(address.getAddress().getHostAddress());
+                    prefixes.add(address.getPrefixLength());
+                }
+            }
+        }
+        String host = link.chooseHost(addresses, prefixes);
+        if (host != null) {
+            hostField.setText(host);
+            prefs.edit().putString("host", host).apply();
+            applyHost(host);
+        }
+    }
+
+    /** Told on the main thread whether the host took the request. */
+    private interface PatternCallback {
+        void onAnswer(boolean showing);
+    }
+
+    /**
+     * Ask the host to leave its QR code for the test pattern.
+     *
+     * @param callback Told how it went; null not to care.
+     */
+    private void askHostForPattern(PatternCallback callback) {
+        InetAddress host = clockSync.getHost();
+        int port = clockSync.getPort();
+        new Thread(() -> {
+            boolean showing = false;
+            if (host != null) {
+                try {
+                    HttpURLConnection connection = (HttpURLConnection) new URL("http", host.getHostAddress(), port, "/pattern").openConnection();
+                    connection.setConnectTimeout(HTTP_TIMEOUT_MS);
+                    connection.setReadTimeout(HTTP_TIMEOUT_MS);
+                    connection.setRequestMethod("POST");
+                    connection.setDoOutput(true);
+                    connection.setFixedLengthStreamingMode(0);
+                    showing = connection.getResponseCode() == HttpURLConnection.HTTP_OK;
+                    connection.disconnect();
+                } catch (IOException e) {
+                    // Reported as not showing
+                }
+            }
+            if (callback != null) {
+                boolean answer = showing;
+                ui.post(() -> callback.onAnswer(answer));
+            }
+        }, "ask-host").start();
+    }
 
     // -----------------------------------------------------------------------------------------------------------------
     // Recorder and uploader callbacks

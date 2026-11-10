@@ -1,6 +1,6 @@
 # Plan: QR code start for latency-test and Latency Cam
 
-Status: feasibility tests passed; phase 1 implemented; a real gamepad and a full stream are still to try. Phases 2 and
+Status: feasibility tests passed; phases 1 and 2 implemented; a real gamepad and a full stream are still to try. Phase
 3 not started. Saved 2026-11-09.
 
 ## Goal
