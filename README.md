@@ -1,18 +1,59 @@
-# ml-latency-analyzer
+# ML Latency Analyzer
 
-Measures a game stream's latency and pacing with a camera pointed at the client display. **Latency Cam**, an Android
-app, films the client display at 240 fps with every camera frame timed on the host's clock, and `latency-test.exe` on
-the host shows a test pattern and logs when it presented each frame. The analysis times every trigger flip and every
-new frame reaching the client's screen, for:
+Measures latency and frame pacing with a camera pointed at a display, either a Windows PC's own display or a game
+stream's client display. **Latency Cam**, an Android app, films the display at 240 fps with every camera frame timed
+on the clock of the PC running `latency-test.exe`, which shows a test pattern and logs when it presented each frame.
+The analysis times every trigger flip and every new frame reaching the screen, for:
 
-- **host present → photon:** the time from the game handing its frame to Windows on the host to the client display
-  showing it, for every flip and every frame
-- **pacing:** how evenly the client showed the host's frames, which shows whether VRR pacing is working
+- **host present → photon:** the time from the game handing its frame to Windows to the display showing it, for every
+  flip and every frame
+- **pacing:** how evenly the display showed the game's frames, which shows whether VRR pacing is working
 
-It works with any streaming host that runs on Windows (Sunshine, for example) and any client: it only needs the
-test app on the host and the camera on the client's display, and nothing from the streaming software itself.
-Builds of the host and client that log every frame can optionally break the result
-[down by stage](#optional-breaking-it-down-by-stage).
+Without a stream, the test app runs on the PC whose display you film, and the result is that PC's own latency from
+present to photon: its GPU, display settings and monitor. With a stream, the test app runs on the host and the camera
+films the client, and the result covers the whole path, from the host's present through the stream to the client
+display. It works with any streaming host that runs on Windows (Sunshine, for example) and any client, and needs
+nothing from the streaming software itself. Builds of the host and client that log every frame can optionally break
+the result [down by stage](#optional-breaking-it-down-by-stage).
+
+To see what streaming itself adds, measure the client display on its own first, then stream at the same frame rate
+and compare the two (see [Measuring a stream against a baseline](#measuring-a-stream-against-a-baseline)).
+
+## Quick Start Latency Measurement
+
+1. **Download** the latest release from the
+   [Releases page](https://github.com/MoreOrLessSoftware/latency-analyzer/releases): `LatencyAnalyzer-VERSION-windows.zip`,
+   which holds `latency-test.exe` and `latency-analyzer.exe`, and the Latency Cam app, `LatencyCam-VERSION.apk`.
+2. **Unzip** the Windows zip into a folder you can write to, such as `C:\Tools\latency-test`, on the PC that will run
+   the test (to measure a stream, that's the streaming host). Results are saved in a `results` folder there, so avoid
+   Program Files.
+3. **Install Latency Cam** on the phone: copy the APK over (or download it on the phone) and open it, allowing installs
+   from that source when Android asks. The phone has to film 1920x1080 at 240 fps (see [What you need](#what-you-need)).
+4. **Start the test app:** run `latency-test.exe`. The first time, Windows asks whether to allow it through the
+   firewall: allow it on private networks, or the phone can't reach it. It opens fullscreen on a QR code.
+   - To measure the PC's own display, run it on that PC.
+   - To measure a stream, add `latency-test.exe` as an app in the streaming host (in Sunshine: Applications, Add New,
+     Command) and start it from the client, so the QR code shows on the client display.
+5. **Connect the phone:** with the phone on the same network as the PC, scan the QR code with the phone's camera. It
+   opens Latency Cam with the PC's address filled in. Wait for the sync line to turn green.
+6. **Record:** on the **Recording** tab, enter a test name and point the phone at the display so the whole QR code
+   screen is in view, ideally with the phone on a stand. Once the view is steady, the PC switches to the test pattern,
+   the phone counts down from 3 and records for 20 s. Keep all four corner bullseyes in shot until it stops.
+7. **Analyse:** choose **Upload & analyze**. The test pattern shows the upload and analysis progress, and the phone
+   switches to the **Results** tab with the headline numbers when it's done. **Open report** shows the full report.
+   Keep `latency-test.exe` running until then.
+8. **Finish:** press Esc on the PC to quit the test app. The recording and its report stay in `results\NAME` next to
+   `latency-test.exe`, and the phone keeps a copy of the report.
+
+To find out how much latency streaming adds rather than the total, repeat this with the test app running on the client
+itself, at the same frame rate, and compare the two runs (see
+[Measuring a stream against a baseline](#measuring-a-stream-against-a-baseline)).
+
+## Screenshots & Sample Results
+
+TODO
+
+## Project Structure
 
 | File | What it is |
 |---|---|
@@ -29,9 +70,10 @@ Builds of the host and client that log every frame can optionally break the resu
 
 ## What you need
 
-- A Windows streaming host with `latency-test.exe` and `latency-analyzer.exe` (see [Build](#build) and
-  [Deploy to a host](#deploy-to-a-host)).
-- A client streaming from it, with its display where the phone can film it.
+- A Windows PC with `latency-test.exe` and `latency-analyzer.exe` (see [Build](#build) and
+  [Deploy to a host](#deploy-to-a-host)). To measure a stream, that's the streaming host.
+- The display to measure, where the phone can film it: the PC's own display, or a client streaming from the host. For
+  a [baseline](#measuring-a-stream-against-a-baseline), a Windows client also needs `latency-test.exe` itself.
 - An Android phone that films 1920x1080 at 240 fps through the camera API, with Latency Cam installed. The Pixel 10 Pro
   qualifies; [android/README.md](android/README.md) says how to check others.
 
@@ -59,17 +101,28 @@ It runs `analyzer/build_exe.ps1`, which needs Python 3 with the `py` launcher an
 installs `analyzer/requirements.txt` and PyInstaller into a virtual environment in the build folder, leaving the
 system's Python packages alone. It isn't part of the default build because it takes about a minute.
 
+To package both exes into the release zip, `LatencyAnalyzer-VERSION-windows.zip` in the build folder (this builds the
+analyzer too, with the version from `project()` in `CMakeLists.txt`):
+
+```
+ninja -C cmake-build-release release-zip
+```
+
+The zip is what goes on a release, next to Latency Cam's APK, and what Sunshine's Latency Test plugin downloads. Its
+installer pins the zip's version and SHA-256, so update both there after uploading a new release.
+
 ## Deploy to a host
 
-1. Build both, then install them into one folder:
+1. Unzip the release zip (see [Quick Start](#quick-start-latency-measurement), or build it with
+   `ninja -C cmake-build-release release-zip`) into a folder on the host, such as `C:\Tools\latency-test`. Or, to
+   also get the analyzer scripts and this README, install a build into one:
 
    ```
    ninja -C cmake-build-release latency-analyzer
    cmake --install cmake-build-release --prefix C:\Tools\latency-test
    ```
 
-   The folder holds `latency-test.exe`, `latency-analyzer.exe`, the analyzer scripts and this README. Only the two
-   exes are needed on a host; copy the folder to it as it is.
+   Only the two exes are needed on a host.
 2. On the host, allow the app through the firewall before the first stream, from an elevated prompt, so Windows
    doesn't ask in the middle of one:
 
@@ -135,8 +188,9 @@ Keys, on the host or through the stream; none of them counts as a flip, and each
 
 ## Measure
 
-1. **Host:** stream `latency-test.exe`. It starts on a QR code and answers Latency Cam on port 48100.
-2. **Phone:** open Latency Cam on the same network, enter a test name and point it at the client display so all four
+1. **PC:** run `latency-test.exe`, either on the PC whose display you're measuring or streamed from the host. It
+   starts on a QR code and answers Latency Cam on port 48100.
+2. **Phone:** open Latency Cam on the same network, enter a test name and point it at the display so all four
    bullseyes are in view. When the screen is steady the host switches to the test pattern, the phone counts down
    from 3 and records for 20 s. **Record** also works by hand, once the sync line is green.
 3. **Results:** after **Stop**, choose **Upload & analyze**. The host analyses the recording and the phone shows the
@@ -154,6 +208,25 @@ Tips:
 - Avoid glare on the display, and fill as much of the shot with it as you can: the frame number patches are small.
 - Keep `latency-test.exe` running until the upload and analysis are done. It starts its logs afresh each time it
   runs, so a recording uploaded after a restart has nothing to match; the analysis says so.
+
+### Measuring a stream against a baseline
+
+A stream's host present → photon includes the client display's own delay, which can be a large part of it and differs
+from one display to the next. To see what the stream itself adds, record a baseline of the client display without the
+stream, then stream to it at the same frame rate:
+
+1. **Baseline:** run `latency-test.exe` on the client itself, fullscreen on the display you'll stream to, and record
+   it with Latency Cam. This measures the client's own present → photon.
+2. **Stream:** stream `latency-test.exe` from the host to the same client and display, and record it again.
+3. **Compare:** `latency-analyzer.exe compare results\BASELINE results\STREAM --kinds local stream` (see
+   [Compare runs](#compare-runs)). The difference is what streaming adds: capture, encoding, the network, decoding and
+   the client's pacing.
+
+Keep everything but the stream the same between the two, above all the frame rate. Latency and pacing both depend on
+it: each frame waits up to a frame time at several steps, and VRR only follows frames below the display's maximum. Set
+the same rate in both with `--fps` or **F** (the status band shows the rate presented), and keep v-sync, the frame
+limiter, the display's refresh rate and its settings the same. The test app on the client and on the host each logs on
+its own clock, so the two runs can be filmed one after the other, with Latency Cam pointed at whichever is running.
 
 ### Analyse again
 
@@ -195,7 +268,8 @@ python analyzer/analyze_video.py NAME.mp4 --host-log latency_test.csv --report
 ### Compare runs
 
 To set two or more analysed runs side by side, for example the test app on the client alone against the same client
-streaming it, or one stream against another after changing a setting:
+streaming it ([a baseline](#measuring-a-stream-against-a-baseline)), or one stream against another after changing a
+setting:
 
 ```
 latency-analyzer.exe compare results\NAME_A results\NAME_B --kinds local stream --labels "Client only" "Streaming"
@@ -232,7 +306,8 @@ present → display): analyse them again to add them.
 
 "Present" alone is ambiguous here, so the analysis never uses it:
 
-- **host present**: the game (the test app) handing its frame to Windows on the host.
+- **host present**: the game (the test app) handing its frame to Windows on the host. Without a stream, the "host" is
+  the PC running the test app, and host present → photon is that PC's own latency.
 - **client present**: the client handing the decoded frame to Windows on the client, before its display has shown
   anything. A client's own latency statistics usually end here.
 - **photon**: the client display showing it, which is what the camera sees.

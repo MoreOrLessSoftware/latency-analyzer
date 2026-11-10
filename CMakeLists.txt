@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.25)
 
 project(ml-latency-analyzer
+        VERSION 0.1
         DESCRIPTION "Camera based input to photon latency testing for game streaming"
         LANGUAGES CXX)
 
@@ -37,6 +38,17 @@ if(WIN32)
             COMMENT "Bundling the analyzer into latency-analyzer.exe with PyInstaller"
             VERBATIM)
     install(PROGRAMS ${CMAKE_CURRENT_BINARY_DIR}/latency-analyzer.exe DESTINATION . OPTIONAL)
+
+    # The release zip with both exes, which is what hosts and the Sunshine plugin download:
+    #   ninja -C cmake-build-release release-zip
+    set(RELEASE_ZIP LatencyAnalyzer-${PROJECT_VERSION}-windows.zip)
+    add_custom_target(release-zip
+            COMMAND ${CMAKE_COMMAND} -E rm -f ${RELEASE_ZIP}
+            COMMAND ${CMAKE_COMMAND} -E tar cf ${RELEASE_ZIP} --format=zip latency-test.exe latency-analyzer.exe
+            WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+            COMMENT "Packaging latency-test.exe and latency-analyzer.exe into ${RELEASE_ZIP}"
+            VERBATIM)
+    add_dependencies(release-zip latency-test latency-analyzer)
 endif()
 
 install(FILES
