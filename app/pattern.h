@@ -651,6 +651,8 @@ namespace latency_test {
     bool entering_fps = false;  ///< Whether a new frame rate is being typed.
     std::string fps_entry;  ///< The frame rate typed so far.
     bool fps_entry_invalid = false;  ///< Whether the last Enter was refused as out of range.
+    std::string activity;  ///< The upload or analysis in progress; empty when there is none.
+    int activity_percent = -1;  ///< Its progress from 0 to 100, or -1 when it can't be told.
   };
 
   /**
@@ -773,6 +775,14 @@ namespace latency_test {
       text += "New frame rate: " + status.fps_entry + "_";
       text += status.fps_entry_invalid ? " \xC2\xB7 must be 1 to 1000" : std::string(" \xC2\xB7 Enter applies (empty: ") + source(status.default_source) + ")";
       text += " \xC2\xB7 Esc cancels";
+      return text;
+    }
+    if (!status.activity.empty()) {
+      // The second line shows an upload or analysis while there is one
+      text += status.activity;
+      if (status.activity_percent >= 0) {
+        text += " \xC2\xB7 " + std::to_string(status.activity_percent) + "%";
+      }
       return text;
     }
     text += status.measured_fps > 0 ? "presenting " + number(status.measured_fps) + " fps, " + number(std::round(status.present_wait_ms * 10) / 10) + " ms in Present" : "presenting \xE2\x80\xA6";

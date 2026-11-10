@@ -949,6 +949,11 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
       app.status.entering_fps = app.fps_entry.active;
       app.status.fps_entry = app.fps_entry.text;
       app.status.fps_entry_invalid = app.fps_entry.invalid;
+      if (app.upload_server) {
+        const auto activity = app.upload_server->activity();
+        app.status.activity = activity.busy ? activity.description : std::string();
+        app.status.activity_percent = activity.percent;
+      }
       app.status_text = to_utf16(latency_test::status_text(app.status));
     }
   }

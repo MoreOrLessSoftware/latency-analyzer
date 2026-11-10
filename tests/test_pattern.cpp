@@ -237,6 +237,29 @@ TEST(LatencyTestPatternTest, ParseOptionsReadsAutoAndTimeServer) {
   EXPECT_EQ(parse({"--time-port", "0"}, error)->time_port, 0);
 }
 
+TEST(LatencyTestPatternTest, StatusTextShowsAnUploadOrAnalysisInProgress) {
+  latency_test::status_t status;
+  status.fps = 60;
+  status.activity = "Analysing run: reading frames, 57 of 100";
+  status.activity_percent = 54;
+  std::string text = latency_test::status_text(status);
+  EXPECT_NE(text.find("\nAnalysing run: reading frames, 57 of 100 \xC2\xB7 54%"), std::string::npos);
+  EXPECT_EQ(text.find("auto flips"), std::string::npos);
+
+  // Without a percentage there's nothing to add
+  status.activity_percent = -1;
+  EXPECT_TRUE(latency_test::status_text(status).ends_with("\nAnalysing run: reading frames, 57 of 100"));
+
+  // Typing a frame rate takes priority, so the prompt stays visible
+  status.entering_fps = true;
+  EXPECT_NE(latency_test::status_text(status).find("\nNew frame rate: "), std::string::npos);
+
+  // And the usual line comes back when it's done
+  status.entering_fps = false;
+  status.activity.clear();
+  EXPECT_NE(latency_test::status_text(status).find("auto flips"), std::string::npos);
+}
+
 TEST(LatencyTestPatternTest, ParseOptionsReadsQr) {
   std::string error;
   EXPECT_TRUE(parse({}, error)->qr);
