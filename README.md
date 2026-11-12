@@ -77,7 +77,7 @@ or browse everything the run produced in [its results folder](samples/Local-Test
 **A comparison** of that baseline with the same client streaming the test app through Moonlight (HEVC at 80 Mbps) at
 the same frame rate, which shows what streaming adds. Click it to open the
 [full comparison](https://htmlpreview.github.io/?https://github.com/MoreOrLessSoftware/latency-analyzer/blob/main/samples/compare_Local-Test_20261110-155954_vs_Moonlight-Test_20261110-150108.html),
-or browse [the stream run's results folder](samples/Moonlight-Test_20261110-150108):
+or view [the stream run's report](https://htmlpreview.github.io/?https://github.com/MoreOrLessSoftware/latency-analyzer/blob/main/samples/Moonlight-Test_20261110-150108/Moonlight-Test_20261110-150108.report.html):
 
 [![The sample comparison](samples/sample-test-comparison.png)](https://htmlpreview.github.io/?https://github.com/MoreOrLessSoftware/latency-analyzer/blob/main/samples/compare_Local-Test_20261110-155954_vs_Moonlight-Test_20261110-150108.html)
 
