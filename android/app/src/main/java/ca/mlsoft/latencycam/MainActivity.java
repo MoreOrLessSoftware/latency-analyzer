@@ -2,6 +2,8 @@ package ca.mlsoft.latencycam;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.AlertDialog;
+import android.content.ContentValues;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
@@ -21,6 +23,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
+import android.provider.MediaStore;
 import android.text.Editable;
 import android.text.InputType;
 import android.text.TextWatcher;
@@ -31,6 +34,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
+import android.view.WindowManager;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.Button;
@@ -71,6 +75,8 @@ public class MainActivity extends Activity implements Recorder.Listener {
     private static final int MUTED = 0xFF8A8984;
     private static final int BLUE = 0xFF2A78D6;
     private static final int PANE_DP = 320;
+    /** Stands in for the test name in a recording made without one. */
+    private static final String UNNAMED = "latency";
     /** Recordings stop by themselves after this long. */
     private static final int AUTO_STOP_S = 20;
     private static final long SCAN_INTERVAL_MS = 250;
@@ -133,6 +139,9 @@ public class MainActivity extends Activity implements Recorder.Listener {
 
     // The last recording saved and not yet uploaded or discarded
     private String pendingName;
+    /** The recording waiting for Upload or Discard was made with no test name. */
+    private boolean pendingUnnamed;
+    private boolean recordingUnnamed;
     private Uri pendingVideo;
     private Uri pendingTiming;
     // The last recording handed to the uploader, for a retry
@@ -617,10 +626,11 @@ public class MainActivity extends Activity implements Recorder.Listener {
             recordText.setText("Kept " + pendingName + " on the phone without uploading it.");
             clearPending();
         }
-        String test = nameField.getText().toString().trim().replaceAll("[^A-Za-z0-9._-]+", "-");
+        String test = fileSafe(nameField.getText().toString());
         prefs.edit().putString("name", nameField.getText().toString().trim()).apply();
         String stamp = new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(new Date());
-        recorder.startRecording((test.isEmpty() ? "latency" : test) + "_" + stamp);
+        recordingUnnamed = test.isEmpty();
+        recorder.startRecording((test.isEmpty() ? UNNAMED : test) + "_" + stamp);
         recordButton.setText(String.format(Locale.US, "Stop · %d s left", AUTO_STOP_S));
         setRecordColor(true);
     }
@@ -637,7 +647,131 @@ public class MainActivity extends Activity implements Recorder.Listener {
         decisionRow.setVisibility(View.GONE);
     }
 
+    /** The test name as it goes in file names: letters, digits, '.', '_' and '-'. */
+    private static String fileSafe(String name) {
+        return name.trim().replaceAll("[^A-Za-z0-9._-]+", "-");
+    }
+
+    /**
+     * Upload the recording waiting for a decision. One made without a test name takes the one typed since, or else
+     * asks for one, which can be skipped.
+     */
     private void uploadPending() {
+        if (pendingName == null) {
+            return;
+        }
+        if (pendingUnnamed) {
+            String typed = nameField.getText().toString().trim();
+            if (fileSafe(typed).isEmpty()) {
+                askForName();
+                return;
+            }
+            namePending(typed);
+        }
+        sendPending();
+    }
+
+    private void askForName() {
+        // A compact layout of its own, rather than AlertDialog's title, message and buttons, so all of it fits above the
+        // keyboard in landscape
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(dp(24), dp(16), dp(16), dp(4));
+        TextView title = new TextView(this);
+        title.setText("Name this test?");
+        title.setTextColor(Color.WHITE);
+        title.setTextSize(20);
+        content.addView(title);
+        EditText input = field("Test name, e.g. amf-av1-4ktv", InputType.TYPE_CLASS_TEXT);
+        input.setImeOptions(input.getImeOptions() | EditorInfo.IME_ACTION_DONE);
+        LinearLayout.LayoutParams inputParams = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        inputParams.rightMargin = dp(8);
+        content.addView(input, inputParams);
+        LinearLayout buttons = new LinearLayout(this);
+        buttons.setGravity(Gravity.CENTER_VERTICAL);
+        Button skip = dialogButton("Skip");
+        Button cancel = dialogButton("Cancel");
+        Button upload = dialogButton("Upload");
+        upload.setEnabled(false);
+        buttons.addView(skip);
+        buttons.addView(new View(this), new LinearLayout.LayoutParams(0, 0, 1));
+        buttons.addView(cancel);
+        buttons.addView(upload);
+        content.addView(buttons);
+
+        AlertDialog dialog = new AlertDialog.Builder(this).setView(content).create();
+        skip.setOnClickListener(v -> {
+            dialog.dismiss();
+            sendPending();
+        });
+        cancel.setOnClickListener(v -> dialog.dismiss());
+        upload.setOnClickListener(v -> {
+            dialog.dismiss();
+            namePending(input.getText().toString().trim());
+            sendPending();
+        });
+        input.addTextChangedListener(new TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence s, int start, int count, int after) {
+            }
+
+            @Override
+            public void onTextChanged(CharSequence s, int start, int before, int count) {
+            }
+
+            @Override
+            public void afterTextChanged(Editable s) {
+                upload.setEnabled(!fileSafe(s.toString()).isEmpty());
+            }
+        });
+        input.setOnEditorActionListener((v, actionId, event) -> {
+            if (upload.isEnabled()) {
+                upload.performClick();
+            }
+            return true;
+        });
+        input.requestFocus();
+        dialog.getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE);
+        dialog.show();
+    }
+
+    private Button dialogButton(String text) {
+        Button button = new Button(this, null, android.R.attr.borderlessButtonStyle);
+        button.setText(text);
+        return button;
+    }
+
+    /**
+     * Give the unnamed recording waiting for a decision a test name, keeping its time stamp, and use the name for the
+     * next recordings too. The files on the phone are renamed to match where possible.
+     */
+    private void namePending(String name) {
+        if (pendingName == null || !pendingUnnamed) {
+            return;  // Recorded again, or discarded, while the name was asked for
+        }
+        nameField.setText(name);
+        prefs.edit().putString("name", name).apply();
+        String renamed = fileSafe(name) + pendingName.substring(UNNAMED.length());
+        renameDownload(pendingVideo, renamed + ".mp4");
+        renameDownload(pendingTiming, renamed + ".camera.json");
+        pendingName = renamed;
+        pendingUnnamed = false;
+    }
+
+    private void renameDownload(Uri uri, String fileName) {
+        if (uri == null) {
+            return;
+        }
+        ContentValues values = new ContentValues();
+        values.put(MediaStore.MediaColumns.DISPLAY_NAME, fileName);
+        try {
+            getContentResolver().update(uri, values, null, null);
+        } catch (RuntimeException ignored) {
+            // The upload takes the new name either way; the phone keeps the old one
+        }
+    }
+
+    private void sendPending() {
         if (pendingName == null) {
             return;
         }
@@ -1029,6 +1163,7 @@ public class MainActivity extends Activity implements Recorder.Listener {
     public void onSaved(String name, int frames, Uri video, Uri timing) {
         ui.post(() -> {
             pendingName = name;
+            pendingUnnamed = recordingUnnamed;
             pendingVideo = video;
             pendingTiming = timing;
             recordText.setText(String.format(Locale.US, "Saved %s (%d frames, %.1f s) in Download/LatencyCam.", name, frames, frames / (double) Recorder.FPS));
