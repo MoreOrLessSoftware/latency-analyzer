@@ -7,6 +7,7 @@ import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
 import android.graphics.Color;
+import android.graphics.Insets;
 import android.graphics.Matrix;
 import android.graphics.RectF;
 import android.graphics.SurfaceTexture;
@@ -176,6 +177,18 @@ public class MainActivity extends Activity implements Recorder.Listener {
     private void buildViews() {
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(Color.BLACK);
+        // Apps are drawn edge to edge, so keep everything clear of a camera cutout, which is beside the preview in
+        // landscape. The system bars are hidden, and only show over the app for a moment when swiped in.
+        root.setOnApplyWindowInsetsListener((v, insets) -> {
+            Insets cutout = insets.getInsets(WindowInsets.Type.displayCutout());
+            if (v.getPaddingLeft() != cutout.left || v.getPaddingTop() != cutout.top ||
+                    v.getPaddingRight() != cutout.right || v.getPaddingBottom() != cutout.bottom) {
+                v.setPadding(cutout.left, cutout.top, cutout.right, cutout.bottom);
+                // The root's size doesn't change, so its layout listener won't refit the preview
+                v.post(this::fitPreview);
+            }
+            return insets;
+        });
 
         preview = new TextureView(this);
         root.addView(preview, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT, Gravity.START | Gravity.CENTER_VERTICAL));
@@ -470,9 +483,10 @@ public class MainActivity extends Activity implements Recorder.Listener {
      * up the corners, and rotate the sensor's frames to match the display.
      */
     private void fitPreview() {
+        // Inside the root's padding, which keeps it clear of a camera cutout
         View parent = (View) preview.getParent();
-        int available = parent.getWidth() - dp(PANE_DP);
-        int height = parent.getHeight();
+        int available = parent.getWidth() - parent.getPaddingLeft() - parent.getPaddingRight() - dp(PANE_DP);
+        int height = parent.getHeight() - parent.getPaddingTop() - parent.getPaddingBottom();
         if (height == 0 || available <= 0) {
             return;
         }

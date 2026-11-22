@@ -1,10 +1,13 @@
 package ca.mlsoft.latencycam;
 
 import android.app.Activity;
+import android.graphics.Insets;
 import android.net.Uri;
 import android.os.Bundle;
+import android.view.WindowInsets;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
+import android.widget.FrameLayout;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -25,7 +28,16 @@ public class ReportActivity extends Activity {
         settings.setJavaScriptEnabled(true);
         settings.setBuiltInZoomControls(true);
         settings.setDisplayZoomControls(false);
-        setContentView(view);
+        // Apps are drawn edge to edge, so keep the report clear of the system bars and any camera cutout. A web
+        // view doesn't keep its page inside its own padding, so it goes in a padded frame.
+        FrameLayout frame = new FrameLayout(this);
+        frame.setOnApplyWindowInsetsListener((v, insets) -> {
+            Insets safe = insets.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+            v.setPadding(safe.left, safe.top, safe.right, safe.bottom);
+            return insets;
+        });
+        frame.addView(view);
+        setContentView(frame);
 
         Uri report = getIntent().getData();
         String html;
