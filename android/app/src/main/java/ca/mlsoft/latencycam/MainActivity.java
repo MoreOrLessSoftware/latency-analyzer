@@ -21,7 +21,9 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
+import android.text.Editable;
 import android.text.InputType;
+import android.text.TextWatcher;
 import android.view.Gravity;
 import android.view.Surface;
 import android.view.TextureView;
@@ -30,9 +32,11 @@ import android.view.ViewGroup;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import android.view.inputmethod.EditorInfo;
+import android.view.inputmethod.InputMethodManager;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
+import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -100,6 +104,8 @@ public class MainActivity extends Activity implements Recorder.Listener {
     private boolean cameraOpen;
     private boolean resumed;
     private boolean onRecordingTab;
+    /** Paused by tapping the preview; stays paused until tapped again. */
+    private boolean cameraPaused;
 
     private TextureView preview;
     private View cameraPlaceholder;
@@ -168,6 +174,10 @@ public class MainActivity extends Activity implements Recorder.Listener {
         // Changing host mid-recording would lose the clock sync samples it needs
         if (link != null && !recorder.isRecording()) {
             useHostFrom(link);
+            // Starting needs the camera to see the QR code
+            if (cameraPaused) {
+                toggleCameraPause();
+            }
         }
     }
 
@@ -180,10 +190,12 @@ public class MainActivity extends Activity implements Recorder.Listener {
         // Apps are drawn edge to edge, so keep everything clear of a camera cutout, which is beside the preview in
         // landscape. The system bars are hidden, and only show over the app for a moment when swiped in.
         root.setOnApplyWindowInsetsListener((v, insets) -> {
-            Insets cutout = insets.getInsets(WindowInsets.Type.displayCutout());
-            if (v.getPaddingLeft() != cutout.left || v.getPaddingTop() != cutout.top ||
-                    v.getPaddingRight() != cutout.right || v.getPaddingBottom() != cutout.bottom) {
-                v.setPadding(cutout.left, cutout.top, cutout.right, cutout.bottom);
+            // The navigation bar comes back while the keyboard is up, and is see-through over the app, so keep clear
+            // of it then too. Hidden and swiped-in bars have no insets.
+            Insets safe = insets.getInsets(WindowInsets.Type.displayCutout() | WindowInsets.Type.navigationBars());
+            if (v.getPaddingLeft() != safe.left || v.getPaddingTop() != safe.top ||
+                    v.getPaddingRight() != safe.right || v.getPaddingBottom() != safe.bottom) {
+                v.setPadding(safe.left, safe.top, safe.right, safe.bottom);
                 // The root's size doesn't change, so its layout listener won't refit the preview
                 v.post(this::fitPreview);
             }
@@ -219,6 +231,7 @@ public class MainActivity extends Activity implements Recorder.Listener {
             }
         });
         root.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> fitPreview());
+        preview.setOnClickListener(v -> toggleCameraPause());
 
         // Covers the preview while the camera is closed, rather than leaving its last frame up
         cameraPlaceholder = buildCameraPlaceholder();
@@ -299,13 +312,30 @@ public class MainActivity extends Activity implements Recorder.Listener {
         placeholderText.setGravity(Gravity.CENTER);
         placeholderText.setPadding(0, dp(8), 0, 0);
         placeholder.addView(placeholderText);
+        placeholder.setOnClickListener(v -> toggleCameraPause());
         return placeholder;
     }
 
     private void updateCameraPlaceholder() {
         cameraPlaceholder.setVisibility(cameraOpen ? View.GONE : View.VISIBLE);
         // On the Recording tab the status text below Record says why the camera is off
-        placeholderText.setText(onRecordingTab ? "Camera off" : "Camera paused");
+        placeholderText.setText(cameraPaused && onRecordingTab ? "Camera paused\nTap to resume" : onRecordingTab ? "Camera off" : "Camera paused");
+    }
+
+    /** Tapping the preview pauses the camera, and tapping it again resumes it, except while recording or saving. */
+    private void toggleCameraPause() {
+        if (!onRecordingTab || recorder.isBusy()) {
+            return;
+        }
+        cameraPaused = !cameraPaused;
+        if (cameraPaused) {
+            closeCamera();
+            cameraText.setText("Camera paused. Tap the preview to resume.");
+        } else {
+            cameraText.setText("");
+            openCameraIfReady();
+        }
+        updateCameraPlaceholder();
     }
 
     private View buildRecordingPage() {
@@ -314,11 +344,11 @@ public class MainActivity extends Activity implements Recorder.Listener {
         nameField = field("Test name, e.g. amf-av1-4ktv", InputType.TYPE_CLASS_TEXT);
         nameField.setText(prefs.getString("name", ""));
         page.addView(label("Test name"));
-        page.addView(nameField);
+        page.addView(withClearButton(nameField, "Clear test name"));
 
         hostField = field("Host IP, blank to find it", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
         hostField.setText(prefs.getString("host", ""));
-        hostField.setImeOptions(EditorInfo.IME_ACTION_DONE);
+        hostField.setImeOptions(hostField.getImeOptions() | EditorInfo.IME_ACTION_DONE);
         hostField.setOnEditorActionListener((v, actionId, event) -> {
             String host = hostField.getText().toString().trim();
             prefs.edit().putString("host", host).apply();
@@ -326,7 +356,7 @@ public class MainActivity extends Activity implements Recorder.Listener {
             return false;
         });
         page.addView(label("Host"));
-        page.addView(hostField);
+        page.addView(withClearButton(hostField, "Clear host"));
 
         recordButton = new Button(this);
         recordButton.setText("Record");
@@ -454,7 +484,44 @@ public class MainActivity extends Activity implements Recorder.Listener {
         field.setInputType(inputType);
         field.setTextColor(Color.WHITE);
         field.setHintTextColor(MUTED);
+        // In landscape the keyboard would otherwise edit in its own full screen box, which runs under a camera cutout
+        // and hides the app. Edit in place instead; the fields are at the top, above the keyboard.
+        field.setImeOptions(field.getImeOptions() | EditorInfo.IME_FLAG_NO_EXTRACT_UI | EditorInfo.IME_FLAG_NO_FULLSCREEN);
         return field;
+    }
+
+    /** The field with a button beside it that empties it, shown while it has text, and keeps the keyboard up. */
+    private View withClearButton(EditText field, String description) {
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.addView(field, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        ImageButton clear = new ImageButton(this);
+        clear.setImageResource(R.drawable.ic_clear);
+        clear.setImageTintList(ColorStateList.valueOf(MUTED));
+        clear.setBackground(null);
+        clear.setContentDescription(description);
+        clear.setOnClickListener(v -> {
+            field.setText("");
+            field.requestFocus();
+            getSystemService(InputMethodManager.class).showSoftInput(field, 0);
+        });
+        clear.setVisibility(field.length() > 0 ? View.VISIBLE : View.GONE);
+        field.addTextChangedListener(new TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence s, int start, int count, int after) {
+            }
+
+            @Override
+            public void onTextChanged(CharSequence s, int start, int before, int count) {
+            }
+
+            @Override
+            public void afterTextChanged(Editable s) {
+                clear.setVisibility(s.length() > 0 ? View.VISIBLE : View.GONE);
+            }
+        });
+        row.addView(clear, new LinearLayout.LayoutParams(dp(40), dp(40)));
+        return row;
     }
 
     private TextView label(String text) {
@@ -684,7 +751,7 @@ public class MainActivity extends Activity implements Recorder.Listener {
     }
 
     private void openCameraIfReady() {
-        if (!resumed || !onRecordingTab || cameraOpen || !preview.isAvailable() || checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+        if (!resumed || !onRecordingTab || cameraPaused || cameraOpen || !preview.isAvailable() || checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             return;
         }
         // Wait for the preview's final size: resizing it after the session exists would change its buffers' size

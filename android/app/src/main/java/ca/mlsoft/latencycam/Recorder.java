@@ -126,6 +126,11 @@ final class Recorder {
         return recording;
     }
 
+    /** Recording, or saving the recording just stopped. */
+    boolean isBusy() {
+        return recording || finishing;
+    }
+
     int framesRecorded() {
         synchronized (videoTimesUs) {
             return videoTimesUs.size();
