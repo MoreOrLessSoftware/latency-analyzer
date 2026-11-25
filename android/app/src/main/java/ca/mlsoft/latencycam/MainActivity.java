@@ -3,7 +3,6 @@ package ca.mlsoft.latencycam;
 import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
-import android.content.ContentValues;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
@@ -23,7 +22,6 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
-import android.provider.MediaStore;
 import android.text.Editable;
 import android.text.InputType;
 import android.text.TextWatcher;
@@ -139,9 +137,9 @@ public class MainActivity extends Activity implements Recorder.Listener {
 
     // The last recording saved and not yet uploaded or discarded
     private String pendingName;
-    /** The recording waiting for Upload or Discard was made with no test name. */
-    private boolean pendingUnnamed;
-    private boolean recordingUnnamed;
+    /** The test name the recording waiting for Upload or Discard was made with, or "" for none. */
+    private String pendingTestName;
+    private String recordingTestName;
     private Uri pendingVideo;
     private Uri pendingTiming;
     // The last recording handed to the uploader, for a retry
@@ -199,9 +197,9 @@ public class MainActivity extends Activity implements Recorder.Listener {
         // Apps are drawn edge to edge, so keep everything clear of a camera cutout, which is beside the preview in
         // landscape. The system bars are hidden, and only show over the app for a moment when swiped in.
         root.setOnApplyWindowInsetsListener((v, insets) -> {
-            // The navigation bar comes back while the keyboard is up, and is see-through over the app, so keep clear
-            // of it then too. Hidden and swiped-in bars have no insets.
-            Insets safe = insets.getInsets(WindowInsets.Type.displayCutout() | WindowInsets.Type.navigationBars());
+            // Only the cutout, which doesn't change: resizing the preview while the camera runs resets its buffers to
+            // the view's size, which the high speed session refuses. The pane keeps clear of the navigation bar.
+            Insets safe = insets.getInsets(WindowInsets.Type.displayCutout());
             if (v.getPaddingLeft() != safe.left || v.getPaddingTop() != safe.top ||
                     v.getPaddingRight() != safe.right || v.getPaddingBottom() != safe.bottom) {
                 v.setPadding(safe.left, safe.top, safe.right, safe.bottom);
@@ -268,10 +266,17 @@ public class MainActivity extends Activity implements Recorder.Listener {
         scanText.setBackgroundColor(0xCC000000);
         scanText.setPadding(dp(16), dp(8), dp(16), dp(8));
         scanText.setVisibility(View.GONE);
+        // Centred in a layer over just the preview's area: centring it in the root with a right margin for the pane
+        // would shift it left by the whole margin, under a camera cutout
+        FrameLayout scanLayer = new FrameLayout(this);
+        FrameLayout.LayoutParams scanLayerParams = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+        scanLayerParams.rightMargin = dp(PANE_DP);
+        root.addView(scanLayer, scanLayerParams);
         FrameLayout.LayoutParams scanParams = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
-        scanParams.rightMargin = dp(PANE_DP);
+        scanParams.leftMargin = dp(16);
+        scanParams.rightMargin = dp(16);
         scanParams.bottomMargin = dp(24);
-        root.addView(scanText, scanParams);
+        scanLayer.addView(scanText, scanParams);
 
         // Right-hand pane: a tab bar over two pages
         LinearLayout pane = new LinearLayout(this);
@@ -279,6 +284,15 @@ public class MainActivity extends Activity implements Recorder.Listener {
         // Nearly opaque: the 16:9 preview runs under the pane's left edge
         pane.setBackgroundColor(0xF2101010);
         root.addView(pane, new FrameLayout.LayoutParams(dp(PANE_DP), ViewGroup.LayoutParams.MATCH_PARENT, Gravity.END));
+        // The navigation bar comes back while the keyboard is up, see-through, over the pane's side of the screen in
+        // landscape. Keep the pane's contents clear of it; the root's padding already covers a cutout there. Hidden and
+        // swiped-in bars have no insets.
+        pane.setOnApplyWindowInsetsListener((v, insets) -> {
+            Insets bar = insets.getInsets(WindowInsets.Type.navigationBars());
+            Insets cutout = insets.getInsets(WindowInsets.Type.displayCutout());
+            v.setPadding(0, 0, Math.max(0, bar.right - cutout.right), Math.max(0, bar.bottom - cutout.bottom));
+            return insets;
+        });
 
         LinearLayout tabs = new LinearLayout(this);
         tabs.setOrientation(LinearLayout.HORIZONTAL);
@@ -629,7 +643,7 @@ public class MainActivity extends Activity implements Recorder.Listener {
         String test = fileSafe(nameField.getText().toString());
         prefs.edit().putString("name", nameField.getText().toString().trim()).apply();
         String stamp = new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(new Date());
-        recordingUnnamed = test.isEmpty();
+        recordingTestName = test.isEmpty() ? "" : nameField.getText().toString().trim();
         recorder.startRecording((test.isEmpty() ? UNNAMED : test) + "_" + stamp);
         recordButton.setText(String.format(Locale.US, "Stop · %d s left", AUTO_STOP_S));
         setRecordColor(true);
@@ -653,63 +667,50 @@ public class MainActivity extends Activity implements Recorder.Listener {
     }
 
     /**
-     * Upload the recording waiting for a decision. One made without a test name takes the one typed since, or else
-     * asks for one, which can be skipped.
+     * Upload the recording waiting for a decision, first asking to confirm its test name or change it. A recording made
+     * without one is offered the name typed since.
      */
     private void uploadPending() {
         if (pendingName == null) {
             return;
         }
-        if (pendingUnnamed) {
-            String typed = nameField.getText().toString().trim();
-            if (fileSafe(typed).isEmpty()) {
-                askForName();
-                return;
-            }
-            namePending(typed);
-        }
-        sendPending();
+        askForName(pendingTestName.isEmpty() ? nameField.getText().toString().trim() : pendingTestName);
     }
 
-    private void askForName() {
+    private void askForName(String suggested) {
         // A compact layout of its own, rather than AlertDialog's title, message and buttons, so all of it fits above the
         // keyboard in landscape
         LinearLayout content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
         content.setPadding(dp(24), dp(16), dp(16), dp(4));
         TextView title = new TextView(this);
-        title.setText("Name this test?");
+        title.setText("Upload this test?");
         title.setTextColor(Color.WHITE);
         title.setTextSize(20);
         content.addView(title);
-        EditText input = field("Test name, e.g. amf-av1-4ktv", InputType.TYPE_CLASS_TEXT);
+        EditText input = field("Test name, or blank to upload it without one", InputType.TYPE_CLASS_TEXT);
         input.setImeOptions(input.getImeOptions() | EditorInfo.IME_ACTION_DONE);
+        input.setText(suggested);
+        input.setSelection(input.length());
         LinearLayout.LayoutParams inputParams = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         inputParams.rightMargin = dp(8);
-        content.addView(input, inputParams);
+        content.addView(withClearButton(input, "Clear test name"), inputParams);
         LinearLayout buttons = new LinearLayout(this);
-        buttons.setGravity(Gravity.CENTER_VERTICAL);
-        Button skip = dialogButton("Skip");
+        buttons.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
         Button cancel = dialogButton("Cancel");
-        Button upload = dialogButton("Upload");
-        upload.setEnabled(false);
-        buttons.addView(skip);
-        buttons.addView(new View(this), new LinearLayout.LayoutParams(0, 0, 1));
+        Button upload = dialogButton("");
         buttons.addView(cancel);
         buttons.addView(upload);
         content.addView(buttons);
 
         AlertDialog dialog = new AlertDialog.Builder(this).setView(content).create();
-        skip.setOnClickListener(v -> {
-            dialog.dismiss();
-            sendPending();
-        });
         cancel.setOnClickListener(v -> dialog.dismiss());
         upload.setOnClickListener(v -> {
             dialog.dismiss();
-            namePending(input.getText().toString().trim());
-            sendPending();
+            sendPending(input.getText().toString().trim());
         });
+        Runnable label = () -> upload.setText(fileSafe(input.getText().toString()).isEmpty() ? "Upload without a name" : "Upload");
+        label.run();
         input.addTextChangedListener(new TextWatcher() {
             @Override
             public void beforeTextChanged(CharSequence s, int start, int count, int after) {
@@ -721,13 +722,11 @@ public class MainActivity extends Activity implements Recorder.Listener {
 
             @Override
             public void afterTextChanged(Editable s) {
-                upload.setEnabled(!fileSafe(s.toString()).isEmpty());
+                label.run();
             }
         });
         input.setOnEditorActionListener((v, actionId, event) -> {
-            if (upload.isEnabled()) {
-                upload.performClick();
-            }
+            upload.performClick();
             return true;
         });
         input.requestFocus();
@@ -742,45 +741,56 @@ public class MainActivity extends Activity implements Recorder.Listener {
     }
 
     /**
-     * Give the unnamed recording waiting for a decision a test name, keeping its time stamp, and use the name for the
-     * next recordings too. The files on the phone are renamed to match where possible.
+     * Upload the recording waiting for a decision under the test name given, keeping its time stamp. A name differing
+     * from the one it was recorded with renames it on the phone first, so the old name isn't left in what's uploaded,
+     * and a name given is used for the next recordings too.
      */
-    private void namePending(String name) {
-        if (pendingName == null || !pendingUnnamed) {
+    private void sendPending(String testName) {
+        if (pendingName == null) {
             return;  // Recorded again, or discarded, while the name was asked for
         }
-        nameField.setText(name);
-        prefs.edit().putString("name", name).apply();
-        String renamed = fileSafe(name) + pendingName.substring(UNNAMED.length());
-        renameDownload(pendingVideo, renamed + ".mp4");
-        renameDownload(pendingTiming, renamed + ".camera.json");
-        pendingName = renamed;
-        pendingUnnamed = false;
-    }
-
-    private void renameDownload(Uri uri, String fileName) {
-        if (uri == null) {
-            return;
+        String test = fileSafe(testName);
+        if (!test.isEmpty()) {
+            nameField.setText(testName);
+            prefs.edit().putString("name", testName).apply();
         }
-        ContentValues values = new ContentValues();
-        values.put(MediaStore.MediaColumns.DISPLAY_NAME, fileName);
-        try {
-            getContentResolver().update(uri, values, null, null);
-        } catch (RuntimeException ignored) {
-            // The upload takes the new name either way; the phone keeps the old one
-        }
-    }
-
-    private void sendPending() {
-        if (pendingName == null) {
-            return;
-        }
-        String name = pendingName;
+        String recorded = pendingName;
+        String name = (test.isEmpty() ? UNNAMED : test) + recorded.substring(recorded.lastIndexOf('_'));
         Uri video = pendingVideo;
         Uri timing = pendingTiming;
         clearPending();
-        recordText.setText("Sent " + name + " to the host; see Results.");
-        startUpload(name, video, timing);
+        if (name.equals(recorded)) {
+            recordText.setText("Sent " + name + " to the host; see Results.");
+            startUpload(name, video, timing);
+            return;
+        }
+        recordText.setText("Renaming " + recorded + " to " + name + "…");
+        new Thread(() -> {
+            String error = null;
+            try {
+                Recorder.rename(this, video, timing, name);
+            } catch (IOException e) {
+                error = e.getMessage();
+            }
+            String failed = error;
+            ui.post(() -> {
+                if (failed != null) {
+                    // Sending it under the new name would leave the old one inside the timing file. Offer it again,
+                    // unless something else is waiting by now.
+                    recordText.setText("Could not rename " + recorded + " (" + failed + "), so it wasn't uploaded.");
+                    if (pendingName == null && !recorder.isBusy()) {
+                        pendingName = recorded;
+                        pendingTestName = testName;
+                        pendingVideo = video;
+                        pendingTiming = timing;
+                        decisionRow.setVisibility(View.VISIBLE);
+                    }
+                    return;
+                }
+                recordText.setText("Sent " + name + " to the host; see Results.");
+                startUpload(name, video, timing);
+            });
+        }, "rename").start();
     }
 
     private void discardPending() {
@@ -1163,7 +1173,7 @@ public class MainActivity extends Activity implements Recorder.Listener {
     public void onSaved(String name, int frames, Uri video, Uri timing) {
         ui.post(() -> {
             pendingName = name;
-            pendingUnnamed = recordingUnnamed;
+            pendingTestName = recordingTestName;
             pendingVideo = video;
             pendingTiming = timing;
             recordText.setText(String.format(Locale.US, "Saved %s (%d frames, %.1f s) in Download/LatencyCam.", name, frames, frames / (double) Recorder.FPS));

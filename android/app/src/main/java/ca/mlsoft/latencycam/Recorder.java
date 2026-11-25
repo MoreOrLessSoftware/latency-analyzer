@@ -36,7 +36,9 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
@@ -633,6 +635,47 @@ final class Recorder {
         done.put(MediaStore.MediaColumns.IS_PENDING, 0);
         resolver.update(uri, done, null, null);
         return uri;
+    }
+
+    /**
+     * Rename a saved recording: its two files, and the video's name inside the timing file, the only place the files'
+     * contents hold the name.
+     *
+     * @param name New recording name, without extension.
+     * @throws IOException If the timing file couldn't be rewritten. The files keep their old names then.
+     */
+    static void rename(Context context, Uri video, Uri timing, String name) throws IOException {
+        ContentResolver resolver = context.getContentResolver();
+        JSONObject root;
+        try (InputStream in = resolver.openInputStream(timing)) {
+            if (in == null) {
+                throw new IOException("no input stream");
+            }
+            ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+            in.transferTo(bytes);
+            root = new JSONObject(bytes.toString(StandardCharsets.UTF_8));
+            root.put("video", name + ".mp4");
+        } catch (JSONException e) {
+            throw new IOException("unreadable timing file", e);
+        }
+        try (OutputStream out = resolver.openOutputStream(timing, "wt")) {
+            if (out == null) {
+                throw new IOException("no output stream");
+            }
+            out.write(root.toString().getBytes(StandardCharsets.UTF_8));
+        }
+        setDisplayName(resolver, timing, name + ".camera.json");
+        setDisplayName(resolver, video, name + ".mp4");
+    }
+
+    private static void setDisplayName(ContentResolver resolver, Uri uri, String fileName) throws IOException {
+        ContentValues values = new ContentValues();
+        values.put(MediaStore.MediaColumns.DISPLAY_NAME, fileName);
+        try {
+            resolver.update(uri, values, null, null);
+        } catch (RuntimeException e) {
+            throw new IOException("could not rename to " + fileName, e);
+        }
     }
 
     /**
